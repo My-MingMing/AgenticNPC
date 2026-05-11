@@ -1,0 +1,24 @@
+# NPC对话RL训练 - 工具注册配置
+# 对应原始项目 RL/my_script/tool_config.yaml
+# 注册 MockSandboxFusionTool 供verl的multi-turn agent loop使用
+
+tools:
+  - class_path: "rl.game_mock_tool_verl.GameMockSandboxTool"
+    name: "mock_tool"
+    num_workers: 8
+    rate_limit: 8
+    acquire_timeout: 90
+    default_timeout: 90
+    schema:
+      type: "function"
+      function:
+        name: "mock_tool"
+        description: "游戏工具模拟器，处理所有游戏系统API调用和玩家模拟"
+        parameters:
+          type: "object"
+          properties:
+            query:
+              type: "string"
+              description: "工具调用的JSON字符串"
+          required:
+            - "query"

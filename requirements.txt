@@ -1,0 +1,22 @@
+# NPC Dialogue System - Dependencies
+# 数据合成（必需）
+langgraph>=0.2.0
+langchain-core>=0.3.0
+openai>=1.0.0
+python-dotenv>=1.0.0
+pyyaml>=6.0
+pydantic>=2.0.0
+
+# 推理服务（部署时需要）
+fastapi>=0.100.0
+uvicorn>=0.23.0
+redis>=5.0.0
+
+# 数据处理（RL训练前）
+pandas>=2.0.0
+pyarrow>=14.0.0
+
+# RL训练（仅GPU机器需要，通过verl安装）
+# torch>=2.1.0
+# verl (从源码安装)
+# sglang (从源码安装)

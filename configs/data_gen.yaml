@@ -1,0 +1,56 @@
+# NPC对话数据合成配置
+# 适配 booming-inc API 网关
+
+logging:
+  task_file_path: "../data/generated_tasks.jsonl"
+
+step_models:
+  BehaviorTreeAgent:
+    model_name: "claude-haiku-4-5-20251001"
+    temperature: 0.9
+    max_tokens: 8192
+  TestCaseAgent:
+    model_name: "claude-sonnet-4-6"
+    temperature: 0.7
+    max_tokens: 16384
+  RefineAgent:
+    model_name: "claude-haiku-4-5-20251001"
+    temperature: 0.5
+    max_tokens: 4096
+
+api_configs:
+  default:
+    api_base: "your base url here"
+    api_key_env: "your api key env here"
+
+# 并行worker数
+max_workers: 4
+
+# 数据质量过滤
+quality_filter:
+  min_test_cases_per_npc: 4
+  require_adversarial: true
+  require_normal: true
+
+# 备选模型配置（按需切换）
+# 高质量方案（贵但效果好）:
+#   BehaviorTreeAgent: claude-sonnet-4-6
+#   TestCaseAgent: claude-opus-4-6
+#   RefineAgent: claude-sonnet-4-6
+#
+# 经济方案（便宜快速）:
+#   BehaviorTreeAgent: gpt-4o-mini
+#   TestCaseAgent: gpt-4o-mini
+#   RefineAgent: gpt-4o-mini
+#
+# 可用的强模型（需要复杂推理时使用）:
+#   - claude-opus-4-6 (最强，贵)
+#   - claude-sonnet-4-6 (强，性价比高)
+#   - gpt-4o (强，中等价格)
+#   - deepseek-v4-pro (强)
+#   - gpt-5 (最新，贵)
+#
+# 可用的快模型（简单任务）:
+#   - gpt-4o-mini (推荐，便宜快速)
+#   - claude-3-5-haiku-20241022 (快)
+#   - deepseek-v4-flash (快)

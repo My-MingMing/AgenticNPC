@@ -1,0 +1,17 @@
+# NPC对话Rubric评估配置（Stage 3）
+step_models:
+  JudgeAgent:
+    model_name: "Qwen3-235B"
+    temperature: 0.1
+    max_tokens: 2048
+
+api_configs:
+  default:
+    api_base: "QWEN_API_BASE"
+    api_key_env: "QWEN_API_KEY"
+  Qwen3-235B:
+    api_base: "QWEN_API_BASE"
+    api_key_env: "QWEN_API_KEY"
+
+# 通过阈值
+pass_threshold: 0.6

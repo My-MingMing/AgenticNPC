@@ -1,0 +1,419 @@
+{
+  "version": "2.0",
+  "description": "游戏NPC对话系统工具库 - 扩充版（18个工具，覆盖7个子系统）",
+  "tool_categories": {
+    "player_query": "玩家状态查询（只读）",
+    "inventory": "背包/库存管理",
+    "commerce": "交易/经济系统",
+    "quest": "任务系统",
+    "social": "社交/关系系统",
+    "service": "NPC服务（修理/附魔/训练）",
+    "world": "世界状态查询"
+  },
+  "tools": [
+    {
+      "name": "query_player_info",
+      "category": "player_query",
+      "description": "查询玩家基本信息：等级、职业、阵营声望、金币余额、VIP状态等",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "player_id": {"type": "string", "description": "玩家唯一标识符"},
+          "info_type": {"type": "string", "description": "查询类型: stats | reputation | balance | vip_status | all"}
+        },
+        "required": ["player_id", "info_type"]
+      },
+      "outputs": {
+        "type": "object",
+        "properties": {
+          "player_level": {"type": "integer"},
+          "player_class": {"type": "string"},
+          "gold_balance": {"type": "integer"},
+          "vip_level": {"type": "integer", "description": "VIP等级 0-5"},
+          "faction_reputation": {"type": "object"},
+          "completed_quests": {"type": "array"},
+          "active_quests": {"type": "array"},
+          "total_play_time_hours": {"type": "integer"},
+          "last_login": {"type": "string"}
+        }
+      }
+    },
+    {
+      "name": "query_player_skills",
+      "category": "player_query",
+      "description": "查询玩家已学技能、专精和冷却状态",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "player_id": {"type": "string", "description": "玩家ID"},
+          "skill_category": {"type": "string", "description": "技能分类: combat | crafting | life | all"}
+        },
+        "required": ["player_id"]
+      },
+      "outputs": {
+        "type": "object",
+        "properties": {
+          "learned_skills": {"type": "array", "description": "已学技能列表 {id, name, level, max_level}"},
+          "skill_points_available": {"type": "integer"},
+          "specialization": {"type": "string"}
+        }
+      }
+    },
+    {
+      "name": "query_player_achievements",
+      "category": "player_query",
+      "description": "查询玩家成就和称号，用于验证特殊资格",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "player_id": {"type": "string", "description": "玩家ID"},
+          "achievement_category": {"type": "string", "description": "成就分类: combat | exploration | social | crafting | all"}
+        },
+        "required": ["player_id"]
+      },
+      "outputs": {
+        "type": "object",
+        "properties": {
+          "achievements": {"type": "array", "description": "已获得成就 {id, name, date}"},
+          "active_title": {"type": "string"},
+          "achievement_points": {"type": "integer"}
+        }
+      }
+    },
+    {
+      "name": "query_inventory",
+      "category": "inventory",
+      "description": "查询玩家或NPC的物品库存，包括装备、材料、消耗品",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "owner_id": {"type": "string", "description": "拥有者ID（玩家或NPC）"},
+          "category": {"type": "string", "description": "物品分类: weapon | armor | consumable | material | quest_item | all"}
+        },
+        "required": ["owner_id"]
+      },
+      "outputs": {
+        "type": "object",
+        "properties": {
+          "items": {"type": "array", "description": "物品列表 {id, name, quantity, level_req, price, category, bound}"},
+          "total_slots": {"type": "integer"},
+          "used_slots": {"type": "integer"},
+          "gold": {"type": "integer"}
+        }
+      }
+    },
+    {
+      "name": "check_item_requirements",
+      "category": "inventory",
+      "description": "检查玩家是否满足使用/购买某物品的所有条件（等级、职业、前置任务、声望等）",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "player_id": {"type": "string", "description": "玩家ID"},
+          "item_id": {"type": "string", "description": "物品ID"}
+        },
+        "required": ["player_id", "item_id"]
+      },
+      "outputs": {
+        "type": "object",
+        "properties": {
+          "eligible": {"type": "boolean"},
+          "unmet_requirements": {"type": "array", "description": "未满足的条件列表"},
+          "requirements": {"type": "object", "description": "所有条件 {level_req, class_req, quest_req, reputation_req}"}
+        }
+      }
+    },
+    {
+      "name": "execute_transaction",
+      "category": "commerce",
+      "description": "执行物品交易（买/卖）。前置：必须已通过query_player_info验证金币，check_item_requirements验证资格",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "player_id": {"type": "string", "description": "玩家ID"},
+          "item_id": {"type": "string", "description": "交易物品ID"},
+          "action": {"type": "string", "description": "交易类型: buy | sell"}
+        },
+        "required": ["player_id", "item_id", "action"]
+      },
+      "outputs": {
+        "type": "object",
+        "properties": {
+          "success": {"type": "boolean"},
+          "new_gold_balance": {"type": "integer"},
+          "price_paid": {"type": "integer"},
+          "discount_applied": {"type": "string", "description": "折扣原因（如有）"},
+          "error": {"type": "string"}
+        }
+      }
+    },
+    {
+      "name": "calculate_price",
+      "category": "commerce",
+      "description": "计算物品的最终价格（含声望折扣、VIP折扣、活动折扣等）",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "item_id": {"type": "string", "description": "物品ID"},
+          "player_id": {"type": "string", "description": "玩家ID（用于计算个人折扣）"},
+          "action": {"type": "string", "description": "buy | sell（卖出价通常为买入价的30-50%）"}
+        },
+        "required": ["item_id", "player_id", "action"]
+      },
+      "outputs": {
+        "type": "object",
+        "properties": {
+          "base_price": {"type": "integer"},
+          "final_price": {"type": "integer"},
+          "discounts": {"type": "array", "description": "应用的折扣列表 {type, percentage, reason}"}
+        }
+      }
+    },
+    {
+      "name": "execute_buyback",
+      "category": "commerce",
+      "description": "执行回购操作。玩家可在30分钟内以原价回购自己卖出的物品",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "player_id": {"type": "string", "description": "玩家ID"},
+          "transaction_id": {"type": "string", "description": "原始交易记录ID"}
+        },
+        "required": ["player_id", "transaction_id"]
+      },
+      "outputs": {
+        "type": "object",
+        "properties": {
+          "success": {"type": "boolean"},
+          "error": {"type": "string", "description": "失败原因（超时、已被购买等）"},
+          "refund_amount": {"type": "integer"}
+        }
+      }
+    },
+    {
+      "name": "query_quest_status",
+      "category": "quest",
+      "description": "查询玩家任务状态：进度、前置条件、可接取任务列表",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "player_id": {"type": "string", "description": "玩家ID"},
+          "quest_id": {"type": "string", "description": "任务ID（可选，不填返回所有）"}
+        },
+        "required": ["player_id"]
+      },
+      "outputs": {
+        "type": "object",
+        "properties": {
+          "quest_status": {"type": "string", "description": "not_started | in_progress | completed | failed"},
+          "current_stage": {"type": "integer"},
+          "total_stages": {"type": "integer"},
+          "prerequisites_met": {"type": "boolean"},
+          "missing_prerequisites": {"type": "array"},
+          "objectives": {"type": "array", "description": "{description, current, target, completed}"},
+          "time_remaining": {"type": "string", "description": "剩余时间（限时任务）"}
+        }
+      }
+    },
+    {
+      "name": "assign_quest",
+      "category": "quest",
+      "description": "向玩家分配任务。前置：必须通过query_quest_status确认prerequisites_met=true",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "player_id": {"type": "string", "description": "玩家ID"},
+          "quest_id": {"type": "string", "description": "要分配的任务ID"}
+        },
+        "required": ["player_id", "quest_id"]
+      },
+      "outputs": {
+        "type": "object",
+        "properties": {
+          "success": {"type": "boolean"},
+          "error": {"type": "string"},
+          "quest_brief": {"type": "string"},
+          "rewards_preview": {"type": "object", "description": "{exp, gold, items}"}
+        }
+      }
+    },
+    {
+      "name": "submit_quest",
+      "category": "quest",
+      "description": "提交已完成的任务，发放奖励。前置：query_quest_status确认所有objectives完成",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "player_id": {"type": "string", "description": "玩家ID"},
+          "quest_id": {"type": "string", "description": "要提交的任务ID"}
+        },
+        "required": ["player_id", "quest_id"]
+      },
+      "outputs": {
+        "type": "object",
+        "properties": {
+          "success": {"type": "boolean"},
+          "rewards_granted": {"type": "object", "description": "{exp, gold, items, reputation}"},
+          "error": {"type": "string"},
+          "next_quest_unlocked": {"type": "string", "description": "解锁的后续任务ID"}
+        }
+      }
+    },
+    {
+      "name": "modify_relationship",
+      "category": "social",
+      "description": "修改玩家与NPC/阵营的关系值。通常在交易、任务完成、特殊事件后调用",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "player_id": {"type": "string", "description": "玩家ID"},
+          "target_id": {"type": "string", "description": "目标NPC或阵营ID"},
+          "delta": {"type": "integer", "description": "变化量（正增负减，范围-100到+100）"}
+        },
+        "required": ["player_id", "target_id", "delta"]
+      },
+      "outputs": {
+        "type": "object",
+        "properties": {
+          "new_value": {"type": "integer"},
+          "tier": {"type": "string", "description": "hostile | unfriendly | neutral | friendly | honored | exalted"},
+          "tier_changed": {"type": "boolean"},
+          "unlocked_perks": {"type": "array", "description": "等级提升后解锁的特权"}
+        }
+      }
+    },
+    {
+      "name": "query_mail",
+      "category": "social",
+      "description": "查询玩家邮件（用于验证赠品、通知、交易记录）",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "player_id": {"type": "string", "description": "玩家ID"},
+          "mail_type": {"type": "string", "description": "unread | system | trade | all"}
+        },
+        "required": ["player_id"]
+      },
+      "outputs": {
+        "type": "object",
+        "properties": {
+          "mails": {"type": "array", "description": "{id, from, subject, has_attachment, timestamp}"},
+          "unread_count": {"type": "integer"}
+        }
+      }
+    },
+    {
+      "name": "execute_repair",
+      "category": "service",
+      "description": "修理玩家装备。费用根据装备等级和损坏程度计算",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "player_id": {"type": "string", "description": "玩家ID"},
+          "item_id": {"type": "string", "description": "要修理的装备ID（不填则修理全部）"}
+        },
+        "required": ["player_id"]
+      },
+      "outputs": {
+        "type": "object",
+        "properties": {
+          "success": {"type": "boolean"},
+          "total_cost": {"type": "integer"},
+          "items_repaired": {"type": "integer"},
+          "error": {"type": "string"}
+        }
+      }
+    },
+    {
+      "name": "execute_enchant",
+      "category": "service",
+      "description": "为装备附魔。需要材料+金币，有失败概率。失败不损坏装备但消耗材料",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "player_id": {"type": "string", "description": "玩家ID"},
+          "item_id": {"type": "string", "description": "要附魔的装备ID"},
+          "enchant_id": {"type": "string", "description": "附魔效果ID"}
+        },
+        "required": ["player_id", "item_id", "enchant_id"]
+      },
+      "outputs": {
+        "type": "object",
+        "properties": {
+          "success": {"type": "boolean"},
+          "result": {"type": "string", "description": "success | failed | critical_success"},
+          "materials_consumed": {"type": "array"},
+          "gold_cost": {"type": "integer"},
+          "new_item_stats": {"type": "object"}
+        }
+      }
+    },
+    {
+      "name": "teach_skill",
+      "category": "service",
+      "description": "教授玩家新技能或升级已有技能。需要满足等级和前置技能要求",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "player_id": {"type": "string", "description": "玩家ID"},
+          "skill_id": {"type": "string", "description": "要学习的技能ID"}
+        },
+        "required": ["player_id", "skill_id"]
+      },
+      "outputs": {
+        "type": "object",
+        "properties": {
+          "success": {"type": "boolean"},
+          "error": {"type": "string"},
+          "gold_cost": {"type": "integer"},
+          "skill_points_spent": {"type": "integer"},
+          "new_skill_level": {"type": "integer"}
+        }
+      }
+    },
+    {
+      "name": "query_world_state",
+      "category": "world",
+      "description": "查询当前世界状态：时间、天气、活动事件、服务器公告",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "scope": {"type": "string", "description": "查询范围: time | weather | events | announcements | all"}
+        },
+        "required": ["scope"]
+      },
+      "outputs": {
+        "type": "object",
+        "properties": {
+          "game_time": {"type": "string", "description": "游戏内时间"},
+          "day_night": {"type": "string", "description": "day | night | dawn | dusk"},
+          "weather": {"type": "string"},
+          "active_events": {"type": "array", "description": "进行中的活动 {name, end_time, bonuses}"},
+          "server_announcements": {"type": "array"}
+        }
+      }
+    },
+    {
+      "name": "query_npc_schedule",
+      "category": "world",
+      "description": "查询NPC的作息时间表（某些NPC只在特定时间出现或提供特定服务）",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "npc_id": {"type": "string", "description": "NPC ID"},
+          "query_type": {"type": "string", "description": "available_now | full_schedule | special_services"}
+        },
+        "required": ["npc_id"]
+      },
+      "outputs": {
+        "type": "object",
+        "properties": {
+          "is_available": {"type": "boolean"},
+          "current_activity": {"type": "string"},
+          "next_available_time": {"type": "string"},
+          "special_services_schedule": {"type": "array", "description": "特殊服务时间表"}
+        }
+      }
+    }
+  ]
+}
