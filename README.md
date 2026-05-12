@@ -254,13 +254,22 @@ bash run_warmup_training.sh
 # 使用warm-up checkpoint作为基座，进行正式Agentic RL
 export MODEL_PATH="./checkpoints/warmup/latest"
 
-# 8x H200 141GB（默认，推荐，最快）
+# 默认使用GRPO算法，8x H200（推荐）
 bash scripts/run_npc_training.sh
 
-# 或指定其他硬件:
+# 指定其他硬件:
 # bash scripts/run_npc_training.sh a100    # 4x A100 80GB
 # bash scripts/run_npc_training.sh 4090    # 8x RTX 4090 24GB
+
+# 切换为GSPO算法（序列级优化，适合多轮tool-use，Qwen3训练同款）:
+# RL_ALGORITHM=gspo bash scripts/run_npc_training.sh
 ```
+
+算法选择:
+| 算法 | 优化粒度 | 特点 | 状态 |
+|------|:---:|------|:---:|
+| GRPO (默认) | token-level | 社区成熟，已验证有效 | ✅ 已训练 |
+| GSPO (备选) | sequence-level | 天然适配多轮tool-use，无需token对齐，Qwen3同款 | 🔜 下一步 |
 
 训练时间:
 | 配置 | 每轮 | 3轮总计 |
@@ -530,13 +539,14 @@ redis-cli ping  # 应返回 PONG
 
 | 技术 | 来源 | 在本项目中的作用 |
 |------|------|-----------------|
-| GRPO | DeepSeekMath (Shao et al., 2024) | RL训练的策略优化算法，无需Critic模型 |
+| GRPO | DeepSeekMath (Shao et al., 2024) | RL训练的策略优化算法（默认） |
+| GSPO | Qwen Team, 2025 ([arXiv:2507.18071](https://arxiv.org/abs/2507.18071)) | 备选算法，序列级优化更适配多轮tool-use |
 | Self-Instruct | Wang et al., 2023 | NPC种子自动扩充 |
 | Persona Hub | Ge et al., 2025 | 多样性角色生成方法论 |
 | ReAct | Yao et al., 2022 | Agent推理+行动的交替模式 |
 | SmoothQuant | Xiao et al., 2023 | W8A8 INT8量化，A100部署加速1.7x |
 | DFlash | z-lab, 2026 ([GitHub](https://github.com/z-lab/dflash)) | Block Diffusion投机采样，无损加速2.3-6.2x |
-| verl | Volcano Engine | 多轮Agentic RL训练框架 |
+| verl | Volcano Engine ([GitHub](https://github.com/verl-project/verl)) | 多轮Agentic RL训练框架（支持GRPO/GSPO/PPO等） |
 | SGLang | LMSYS | 推理引擎（连续批处理 + RadixAttention） |
 | LangGraph | LangChain | 数据合成工作流DAG编排 |
 

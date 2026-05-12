@@ -123,6 +123,11 @@ case "${HW_PROFILE}" in
     ;;
 esac
 
+# ====== 算法选择 ======
+# 支持: grpo (默认，已验证) | gspo (备选，序列级优化)
+# 用法: RL_ALGORITHM=gspo bash run_npc_training.sh h200
+RL_ALGORITHM="${RL_ALGORITHM:-grpo}"
+
 # ====== 通用超参数 ======
 CLIP_RATIO_LOW=0.2
 CLIP_RATIO_HIGH=0.28
@@ -135,9 +140,10 @@ SAVE_FREQ=50
 
 # ====== 打印配置 ======
 echo "============================================================"
-echo "NPC Dialogue RL Training (verl + GRPO)"
+echo "NPC Dialogue RL Training (verl + ${RL_ALGORITHM^^})"
 echo "============================================================"
 echo "Hardware Profile : ${HW_PROFILE}"
+echo "Algorithm        : ${RL_ALGORITHM}"
 echo "GPUs             : ${N_GPUS}"
 echo "Model            : ${MODEL_PATH}"
 echo "Batch Size       : ${TRAIN_BATCH_SIZE}"
@@ -154,7 +160,7 @@ echo "============================================================"
 
 # ====== 启动训练 ======
 python -m verl.trainer.main_ppo \
-    algorithm.adv_estimator=grpo \
+    algorithm.adv_estimator=${RL_ALGORITHM} \
     algorithm.use_kl_in_reward=False \
     algorithm.kl_ctrl.kl_coef=${KL_COEFF} \
     \
