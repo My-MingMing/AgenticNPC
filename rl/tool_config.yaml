@@ -1,5 +1,4 @@
 # NPC对话RL训练 - 工具注册配置
-# 对应原始项目 RL/my_script/tool_config.yaml
 # 注册 MockSandboxFusionTool 供verl的multi-turn agent loop使用
 
 tools:
