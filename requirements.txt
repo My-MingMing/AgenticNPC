@@ -16,6 +16,11 @@ redis>=5.0.0
 pandas>=2.0.0
 pyarrow>=14.0.0
 
+# 模型量化（部署前执行一次）
+# pip install llmcompressor datasets
+# llmcompressor>=0.4.0
+# datasets>=2.14.0
+
 # RL训练（仅GPU机器需要，通过verl安装）
 # torch>=2.1.0
 # verl (从源码安装)
