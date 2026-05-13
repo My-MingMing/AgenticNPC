@@ -164,7 +164,7 @@ python run_npc_data_gen.py
 
 预期输出: `data/generated_tasks.jsonl`（每个NPC产出6-10个测试场景）
 
-### Step 2: Agent求解（Stage 2 - 生成对话轨迹）
+### Step 2: Agent求解（Stage 2 - 生成轨迹）
 
 ```bash
 # 对每个场景运行Agent求解循环（每个重复2次）
@@ -230,7 +230,7 @@ python generate_warmup_data.py --num_samples 1000 --output ../data/warmup_train.
 # 转换为parquet
 python ../rl/convert_parquet.py --input ../data/warmup_train.json --output ../data/warmup_train.parquet
 
-# 运行warm-up训练（8xH200，约4-6小时）
+# 运行warm-up训练（默认8xH200可修改传入参数）
 bash run_warmup_training.sh
 ```
 
@@ -244,7 +244,7 @@ bash run_warmup_training.sh
 | 方案 | RL初期reward | 收敛速度 | 额外成本 |
 |------|:---:|:---:|:---:|
 | 直接Agentic RL | 大量0分rollout | 慢 | 无 |
-| Warm-up → Agentic RL | 多数rollout有正reward | 快~2x | 4-6h训练 + 0 API费 |
+| Warm-up → Agentic RL | 多数rollout有正reward | 快~2x | 少量训练 + 0 API费 |
 
 完成后模型checkpoint保存在 `checkpoints/warmup/`，作为Phase 2的初始化。
 
@@ -316,8 +316,8 @@ python scripts/quantize_model.py \
 #     --scheme fp8
 
 # ====== 部署（三种方案，按硬件选择）======
-
-# --- 方案1: SmoothQuant INT8 (A100, 稳妥之选) ---
+A100不支持FP8,所以采用int8
+# --- 方案1: SmoothQuant INT8 (A100) ---
 python -m sglang.launch_server \
     --model-path ./checkpoints/final-int8 \
     --quantization smoothquant \
