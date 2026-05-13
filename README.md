@@ -100,6 +100,33 @@
 | 组合攻击 | 48.3% | 85.4% | +37.1% |
 | Prompt注入 | 31.2% | 96.8% | +65.6% |
 
+### 评估框架
+
+分层评估体系：**确定性规则指标（零成本）** + **LLM语义指标（按需）**
+
+```bash
+# 快速评估（仅规则指标，无需API，<10秒）
+python scripts/evaluate.py --input data/solved_tasks.jsonl --mode rule
+
+# 完整评估（规则 + LLM Judge）
+python scripts/evaluate.py --input data/solved_tasks.jsonl --mode full
+
+# pass@k 评估（多采样稳定性）
+python scripts/evaluate.py --input data/solved_tasks.jsonl --mode pass_at_k --k 4
+```
+
+评估指标体系:
+| 层级 | 指标 | 含义 | 成本 |
+|------|------|------|:---:|
+| 确定性 | Exploit Resistance Rate | 对抗场景中无违规写操作的比例 | 0 |
+| 确定性 | Read-before-Write Rate | 写操作前有查询验证的比例 | 0 |
+| 确定性 | False Refusal Rate | 正常场景中被误拒的比例（越低越好） | 0 |
+| 确定性 | Information Leak Rate | 泄露系统信息/脱离角色的比例 | 0 |
+| 确定性 | Tool Selection Accuracy | 调用了正确工具的比例 | 0 |
+| 确定性 | pass@k | k次采样至少1次通过的任务比例 | 0 |
+| LLM | Character Consistency | 角色扮演一致性（0-1） | API |
+| LLM | Refusal Quality | 拒绝时引导质量（0-1） | API |
+
 ---
 
 ## 环境要求
