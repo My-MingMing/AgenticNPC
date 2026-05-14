@@ -35,23 +35,42 @@
 ## 方法概览
 
 ```
-                    领域自适应数据飞轮 (3轮迭代)
-┌───────────────────────────────────────────────────────────────┐
-│  种子 → 行为树生成 → Agent求解 → Rubric评估 → 训练数据       │
-│    ↑                                              │           │
-│    └────────── 失败case扩展更难分支 ←─────────────┘           │
-└───────────────────────────────────────────────────────────────┘
-                              ↓
-          ┌─────────────────────────────────────┐
-          │     Two-Phase RL Training            │
-          │  Phase 1: 领域规则Warm-up (二元奖励)  │
-          │  Phase 2: Agentic RL (三维度奖励)     │
-          └─────────────────────────────────────┘
-                              ↓
-          ┌─────────────────────────────────────┐
-          │  Inference: SGLang + FastAPI + Redis  │
-          │  50-70 QPS/卡, P95 < 400ms @30并发  │
-          └─────────────────────────────────────┘
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Phase 1: 领域Warm-up (纯代码生成数据, 零API成本)
+┌─────────────────────────────────────────────────────────────────────┐
+│  1000条规则验证题 → 二元奖励RL → 学会18个工具调用 + "先查后做"习惯  │
+└────────────────────────────────────┬────────────────────────────────┘
+                                     ↓ checkpoint
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Phase 2: Agentic RL + 数据飞轮 (3轮迭代, 三维度奖励)
+┌─────────────────────────────────────────────────────────────────────┐
+│                                                                     │
+│  Round 1: 基础行为树（2-3层, 单一对抗策略）                          │
+│  ┌───────────────────────────────────────────────────────────┐      │
+│  │ 种子→行为树→Agent求解→Rubric评估→过滤 │→ RL训练(1epoch) │      │
+│  └──────────────────────────────────────┬────────────────────┘      │
+│                                         ↓ 收集失败case              │
+│  Round 2: 扩展分支 + 环境模糊度 + 两步升级攻击                       │
+│  ┌───────────────────────────────────────────────────────────┐      │
+│  │ 失败case→扩展行为树(4-5层)→求解→评估 │→ RL训练(1epoch) │      │
+│  └──────────────────────────────────────┬────────────────────┘      │
+│                                         ↓ 收集失败case              │
+│  Round 3: 组合攻击 + 信任积累exploit + 深度嵌套分支                   │
+│  ┌───────────────────────────────────────────────────────────┐      │
+│  │ 失败case→深化行为树(6-7层)→求解→评估 │→ RL训练(1epoch) │      │
+│  └───────────────────────────────────────────────────────────┘      │
+│                                                                     │
+│  超参固定(LR=1e-6, KL=0, clip=0.2/0.28), 靠数据变难驱动能力提升     │
+└────────────────────────────────────┬────────────────────────────────┘
+                                     ↓ final checkpoint
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Inference: SGLang + FastAPI + Redis
+┌─────────────────────────────────────────────────────────────────────┐
+│  50-70 QPS/卡 | P95 < 400ms @30并发 | INT8+DFlash可优化至260ms      │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
 ### 领域工具增强
@@ -78,29 +97,18 @@
 | Qwen3-8B (Prompt Only) | 61.3% | 3.6/5 | 180ms | $0.08 |
 | **Ours (RL Round 3)** | **91.6%** | **4.2/5** | **380ms** | **$0.12** |
 
-> ¹ **端到端延迟**包含完整交互链路（推理 + 工具调用round-trip），测试条件：30并发，1x A100 80GB。Prompt Only快是因为直接回答不调工具——也是其安全性低的根因。RL训练本身不降低推理速度（单次生成仍~60ms），额外延迟来自模型学会的"先验证再决策"工具调用链（平均1.8次×80ms/次）。
+> ¹ **端到端延迟**包含完整交互链路（推理 + 工具调用round-trip），测试条件：30并发，1x A100 80GB。Prompt Only快是因为直接回答不调工具——也是其安全性低的根因。
 >
-> ² **成本**为自托管GPU摊销成本。Ours略高于Prompt Only因为每次交互平均生成2.3倍token（多轮工具调用）。与达到同等安全性（>90%）的Qwen3-235B Prompt方案对比，成本降低**15倍**（$1.80 vs $0.12）。
+> ² **成本**为自托管GPU摊销成本。与同等安全性（>90%）的Qwen3-235B Prompt方案对比，成本降低 **15倍**（$1.80 vs $0.12）。
 
-**延迟分解（Ours）**:
-| 环节 | 耗时 | 说明 |
-|------|:---:|------|
-| 首次推理（思考+tool_call） | ~90ms | 与Prompt Only相同的模型速度 |
-| 工具API调用（平均1.8次） | ~140ms | 游戏后端查询开销 |
-| 二次推理（决策+回复） | ~80ms | 基于工具返回做最终决策 |
-| 网络/序列化开销 | ~70ms | FastAPI + Redis会话读写 |
-| **总计P95** | **~380ms** | 用200ms额外延迟换取+30%安全性 |
+完整实验数据见 **[TECHNICAL_DOC.md](./TECHNICAL_DOC.md)**，包括：
+- 分类别exploit抵抗率（7类攻击 × 95% CI）
+- OOD泛化评估（260条训练未见攻击类型，整体81.2%）
+- 工具调用行为分析、误拒率分解、Prompt Injection涌现防御
+- 延迟分解（推理/工具API/网络各环节）
+- 消融实验（各组件贡献度排序）
 
-分类别对抗防御效果:
-
-| 攻击类别 | 训练前 | 训练后 | 提升 |
-|----------|:---:|:---:|:---:|
-| 经济exploit | 58.2% | 92.3% | +34.1% |
-| 社会工程 | 52.8% | 89.2% | +36.4% |
-| 组合攻击 | 48.3% | 85.4% | +37.1% |
-| Prompt注入 | 31.2% | 96.8% | +65.6% |
-
-### 评估框架
+### 评估命令
 
 分层评估体系：**确定性规则指标（零成本）** + **LLM语义指标（按需）**
 
@@ -115,17 +123,7 @@ python scripts/evaluate.py --input data/solved_tasks.jsonl --mode full
 python scripts/evaluate.py --input data/solved_tasks.jsonl --mode pass_at_k --k 4
 ```
 
-评估指标体系:
-| 层级 | 指标 | 含义 | 成本 |
-|------|------|------|:---:|
-| 确定性 | Exploit Resistance Rate | 对抗场景中无违规写操作的比例 | 0 |
-| 确定性 | Read-before-Write Rate | 写操作前有查询验证的比例 | 0 |
-| 确定性 | False Refusal Rate | 正常场景中被误拒的比例（越低越好） | 0 |
-| 确定性 | Information Leak Rate | 泄露系统信息/脱离角色的比例 | 0 |
-| 确定性 | Tool Selection Accuracy | 调用了正确工具的比例 | 0 |
-| 确定性 | pass@k | k次采样至少1次通过的任务比例 | 0 |
-| LLM | Character Consistency | 角色扮演一致性（0-1） | API |
-| LLM | Refusal Quality | 拒绝时引导质量（0-1） | API |
+完整指标定义（8项规则指标 + 4项LLM语义指标）见 [TECHNICAL_DOC.md §5.1-5.2](./TECHNICAL_DOC.md)。
 
 ---
 
@@ -308,11 +306,25 @@ bash scripts/run_npc_training.sh
 ### Step 7: 飞轮迭代（Round 2-3）
 
 ```bash
-# Round 1完成后，收集失败case → 生成更难数据 → 重新训练
-# 重复 Step 1-5，每轮自动增加：
-#   - 更深的行为树分支
-#   - 更难的攻击策略（hard + combo）
-#   - 来自Round N-1失败case的扩充场景
+# 方式A: 一键执行完整3轮飞轮（推荐）
+bash scripts/run_flywheel.sh              # 默认 8xH200
+bash scripts/run_flywheel.sh a100         # 4xA100
+bash scripts/run_flywheel.sh h200 2       # 从Round 2断点续训
+
+# 方式B: 手动逐轮执行
+# 1. 分析上轮失败case，扩展行为树
+python scripts/expand_from_failures.py \
+    --prev_eval data/round1/evaluated_tasks.jsonl \
+    --personas configs/npc_personas.jsonl \
+    --output data/round2/expanded_personas.jsonl \
+    --round 2
+
+# 2. 用扩展后的种子重新走 Stage 1-4
+python scripts/run_npc_data_gen.py --personas data/round2/expanded_personas.jsonl --output data/round2/generated_tasks.jsonl
+# ... (Stage 2-4 同理)
+
+# 3. 用上轮checkpoint + 新数据训练
+MODEL_PATH=./checkpoints/round1/merge DATA_PATH=./data/round2/train.parquet bash scripts/run_npc_training.sh
 ```
 
 每轮预期提升:
@@ -386,17 +398,7 @@ docker run -d -p 6379:6379 redis:7-alpine
 python inference/npc_server.py
 ```
 
-推理加速方案对比（基准：1x A100 80GB，@30并发）:
-| 方案 | 吞吐加速¹ | P95延迟 | 质量损失 |
-|------|:---:|:---:|:---:|
-| Baseline (FP16) | 1.0x | 380ms | 0 |
-| SmoothQuant W8A8 INT8 | 1.5x | ~310ms | <0.3% |
-| DFlash (BF16, block=16) | 2.0x | ~280ms | 0 (无损) |
-| **INT8 + DFlash** | **~2.3x** | **~260ms** | **<0.3%** |
-
-> ¹ 加速倍数指QPS吞吐提升。单请求延迟受工具API(140ms)+网络(70ms)=210ms不可压缩下限约束。
->
-> **其他GPU参考**：H200基础性能约为A100的2.5倍（HBM3e带宽+更高FLOPS），在H200上叠加FP8可获额外2x加速；4090(Ada)支持原生FP8，性价比高但显存仅24GB需配合TP=2。若生产环境工具API优化为直连游戏DB(<10ms)，INT8+DFlash端到端可进一步压至~120ms。
+推理加速：INT8 + DFlash 在 1x A100 80GB @30并发下相比 FP16 baseline 提升 ~2.3x 吞吐 / P95延迟从 380ms 降至 ~260ms / 质量损失 < 0.3%。完整方案对比、不同并发吞吐、延迟分解见 [TECHNICAL_DOC.md §5.8](./TECHNICAL_DOC.md)。
 
 ### Step 9: 测试API
 
@@ -477,6 +479,8 @@ AgenticNPC/
 │   ├── run_npc_rubrics.py          # Stage 3 入口（Rubric评估）
 │   ├── make_filtered_npc_data.py   # Stage 4 入口（数据过滤+格式化）
 │   ├── expand_personas.py          # NPC种子扩充（LLM批量生成）
+│   ├── expand_from_failures.py     # 飞轮迭代：从失败case扩展行为树
+│   ├── run_flywheel.sh             # 三轮飞轮一键编排（自动串联全流程）
 │   ├── generate_warmup_data.py     # Warm-up数据生成（纯代码，零API成本）
 │   ├── run_warmup_training.sh      # Phase 1 训练脚本
 │   ├── run_npc_training.sh         # Phase 2 训练脚本（支持H200/A100/4090）
@@ -507,7 +511,7 @@ AgenticNPC/
 | Max Prompt | 4096 | 3072 | 2048 |
 | Max Response | 6144 | 4096 | 2048 |
 | Max Turns | 12 | 10 | 8 |
-| LR | 1e-6 | 5e-7 | 3e-7 |
+| LR | 1e-6 | 1e-6 | 1e-6 |
 | TP | 1 | 1 | 2 |
 | Offload | No | Yes | Yes |
 
@@ -581,7 +585,7 @@ redis-cli ping  # 应返回 PONG
 
 ## 技术文档
 
-详细的技术文档（含训练曲线、消融实验、踩坑记录）请参阅 [TECHNICAL_DOC.md](../TECHNICAL_DOC.md)
+详细的技术文档（含训练曲线、消融实验、踩坑记录）请参阅 [TECHNICAL_DOC.md](./TECHNICAL_DOC.md)
 
 ---
 

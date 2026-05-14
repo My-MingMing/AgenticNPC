@@ -1,6 +1,6 @@
 """
 游戏世界状态适配器
-将游戏后端数据库状态转换为AgenticQwen框架的 tool_return_expected 格式
+将游戏后端数据库状态转换为训练和推理所需的 tool_return_expected 格式
 用于训练时的Mock环境构建和推理时的真实API对接
 """
 

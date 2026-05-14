@@ -71,6 +71,19 @@ def main():
                 "repeat_idx": repeat_idx,
                 "solution": result,
                 "success": True,
+                "npc_policy": npc_data.get("policy", ""),
+                "task_info": {
+                    "user_background": task_info.get("user_background", ""),
+                    "npc_policy": npc_data.get("policy", ""),
+                    "tool_return_expected": task_info.get("tool_return_expected", {}),
+                    "expected_path": task_info.get("tool_return_expected", {}).get("normal_path", []),
+                    "hack_path": task_info.get("tool_return_expected", {}).get("hack_path", []),
+                    "exploit_strategy": task_info.get("user_escape_strategy", ""),
+                    "evaluation": task_info.get("evaluation", ""),
+                    "test_policy": task_info.get("test_policy", ""),
+                    "player_goal": task_info.get("player_goal", ""),
+                    "actual_player_state": task_info.get("player_actual_state", {}),
+                },
             }
         except Exception as e:
             print(f"Error solving task: {e}")

@@ -26,14 +26,19 @@ class ModelConfiguration(BaseModel):
         """从 RunnableConfig 创建一个 ModelConfiguration 实例。"""
         configurable: dict[str, Any] = config.get("configurable", {}) if config else {}
 
+        # 兼容 Pydantic v1/v2
+        fields = cls.model_fields if hasattr(cls, "model_fields") else cls.__fields__
         raw_values: Dict[str, Any] = {
-            name: configurable.get(name, field.default)
-            for name, field in cls.__fields__.items()
+            name: configurable.get(name, getattr(field, "default", None))
+            for name, field in fields.items()
         }
 
         values = {k: v for k, v in raw_values.items() if v is not None}
 
-        model_name = values["model_name"]
+        model_name = values.get("model_name")
+        if not model_name:
+            raise ValueError(f"model_name is required in config but got: {configurable}")
+
         api_configs = configurable.get("api_configs", {})
         model_api_config = api_configs.get(model_name, api_configs.get("default", {}))
 

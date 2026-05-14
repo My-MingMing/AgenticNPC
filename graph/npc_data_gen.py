@@ -118,7 +118,7 @@ def npc_test_case_node(state: NPCDataGenState, config: RunnableConfig):
         "checked_tools": tools_parsed,
         "policy_str": policy,
         "test_cases": test_cases,
-        "breaked": test_cases is None or policy is None,
+        "breaked": not test_cases or policy is None,
     }
 
 

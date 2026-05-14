@@ -18,6 +18,7 @@ def main():
     parser = argparse.ArgumentParser(description="NPC Dialogue Data Synthesis")
     parser.add_argument("--config", default="../configs/data_gen.yaml", help="Config file path")
     parser.add_argument("--personas", default="../configs/npc_personas.jsonl", help="NPC personas file")
+    parser.add_argument("--output", default=None, help="Override output path (default: from config)")
     parser.add_argument("--num_seeds", type=int, default=None, help="Limit number of seeds to process")
     parser.add_argument("--dry_run", action="store_true", help="Print config and exit")
     args = parser.parse_args()
@@ -26,6 +27,10 @@ def main():
     config_path = os.path.join(os.path.dirname(__file__), args.config)
     with open(config_path, 'r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
+
+    # 如果命令行指定了output，覆盖config中的路径
+    if args.output:
+        config["logging"]["task_file_path"] = args.output
 
     # 加载NPC种子
     personas_path = os.path.join(os.path.dirname(__file__), args.personas)
