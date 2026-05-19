@@ -525,7 +525,7 @@ AgenticNPC/
 <summary><b>ImportError: No module named 'configuration'</b></summary>
 
 ```bash
-# 确保在 GameAgent/ 目录下运行
+# 确保在 AgenticNPC/ 目录下运行
 export PYTHONPATH="${PYTHONPATH}:$(pwd)"
 ```
 </details>
