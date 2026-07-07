@@ -370,12 +370,6 @@ bash scripts/run_npc_training.sh
 | GRPO (默认) | token-level | 社区成熟，已验证有效 | ✅ 已训练 |
 | GSPO (备选) | sequence-level | 天然适配多轮tool-use，无需token对齐，Qwen3同款 | 🔜 下一步 |
 
-训练时间:
-| 配置 | 每轮 | 3轮总计 |
-|------|:---:|:---:|
-| 8x H200 | ~14h | ~2.5天 |
-| 4x A100 | ~30h | ~5天 |
-| 8x 4090 | ~50h | ~8天 |
 
 ### Step 7: 飞轮迭代（Round 2-3）
 
