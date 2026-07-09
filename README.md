@@ -94,69 +94,69 @@ Inference: SGLang + FastAPI + Redis
 
 ```
 AgenticNPC/
-├── configuration.py                # 模型配置类（LLM API封装）
+├── configuration.py                # 模型配置类（多档 step_models + LLM API 网关封装）
 ├── requirements.txt                # 依赖列表
-├── .env.example                    # API密钥模板
-├── .gitignore
+├── .env.example                    # API 密钥模板（.env → .local.env override）
 │
-├── configs/                        # 数据定义层
-│   ├── npc_personas.jsonl          # NPC角色种子（5类，可用expand_personas.py扩充）
-│   ├── game_tools_library.json     # 18个游戏工具定义（7子系统）
-│   ├── player_exploit_strategies.json  # 48种攻击策略（7类）
+├── configs/                        # ① 数据定义层：种子 / 工具库 / 攻击策略 + 各 Stage 配置
+│   ├── npc_personas.jsonl          # NPC 角色种子（5 类，可用 expand_personas.py 扩充）
+│   ├── game_tools_library.json     # 18 个游戏工具定义（7 子系统）
+│   ├── player_exploit_strategies.json  # 48 种对抗攻击策略（7 类）
 │   ├── data_gen.yaml               # Stage 1 数据合成配置
 │   ├── solve_task.yaml             # Stage 2 求解配置
 │   └── rubrics.yaml                # Stage 3 评估配置
 │
-├── prompts/                        # Prompt工程层
-│   ├── npc_system_prompt.py        # NPC行为树生成 + System Prompt模板
-│   ├── tool_simulation_prompt.py   # 游戏工具模拟Prompt
-│   ├── player_simulation_prompt.py # 对抗性玩家模拟Prompt
-│   └── npc_judge_prompt.py         # 三维度评估Judge Prompt
+├── prompts/                        # ② Prompt 工程层：各 Stage 用到的提示词模板
+│   ├── npc_system_prompt.py        # NPC 行为树生成 + System Prompt 模板
+│   ├── tool_simulation_prompt.py   # 游戏工具模拟 Prompt
+│   ├── player_simulation_prompt.py # 对抗性玩家模拟 Prompt
+│   └── npc_judge_prompt.py         # 三维度评估 Judge Prompt
 │
-├── functions/                      # 核心业务逻辑
-│   ├── npc_tool_set_policy_gen.py  # Stage 1: 行为树+策略生成
-│   ├── npc_policy_task.py          # Stage 1: 测试用例生成
-│   ├── npc_refine_task.py          # Stage 1: 用例精炼
-│   ├── npc_solve_task.py           # Stage 2: Agent推理+标签解析
-│   ├── game_mock_tools.py          # Stage 2: 游戏工具模拟函数
-│   └── player_simulator.py         # Stage 2: 对抗性玩家模拟函数
+├── functions/                      # ③ 核心业务逻辑：LangGraph 节点调用的具体实现
+│   ├── npc_tool_set_policy_gen.py  # Stage 1：行为树 + 策略生成
+│   ├── npc_policy_task.py          # Stage 1：测试用例生成
+│   ├── npc_refine_task.py          # Stage 1：用例精炼
+│   ├── npc_solve_task.py           # Stage 2：Agent 推理 + 标签解析
+│   ├── game_mock_tools.py          # Stage 2：游戏工具模拟函数
+│   └── player_simulator.py         # Stage 2：对抗性玩家模拟函数
 │
-├── graph/                          # LangGraph工作流编排
-│   ├── npc_data_gen.py             # Stage 1 DAG (行为树→测试用例→精炼)
-│   └── npc_solve_task.py           # Stage 2 Agent Loop (推理→工具/玩家→循环)
+├── graph/                          # ④ LangGraph 工作流编排（两种拓扑）
+│   ├── npc_data_gen.py             # Stage 1 DAG：行为树 → 测试用例 → 精炼
+│   └── npc_solve_task.py           # Stage 2 Agent Loop：推理 → 工具/玩家 → 循环
 │
-├── rl/                             # RL训练层
-│   ├── warmup_reward_function.py   # Phase 1: 二元奖励（规则验证）
-│   ├── npc_reward_function.py      # Phase 2: 三维度连续奖励（一票否决）
-│   ├── game_mock_tool_verl.py      # verl兼容Mock工具（create/execute/calc_reward）
+├── rl/                             # ⑤ RL 训练层：奖励函数 + verl 集成
+│   ├── warmup_reward_function.py   # Phase 1：二元奖励（纯规则，零 LLM）
+│   ├── npc_reward_function.py      # Phase 2：三维度连续奖励（一票否决）
+│   ├── game_mock_tool_verl.py      # verl 兼容 Mock 工具（create/execute/calc_reward）
 │   ├── game_mock_tool_rl.py        # 世界状态追踪器（GameWorldStateTracker）
-│   ├── tool_config.yaml            # verl工具注册配置
-│   └── convert_parquet.py          # JSON→Parquet格式转换
+│   ├── tool_config.yaml            # verl 工具注册配置
+│   └── convert_parquet.py          # JSON → Parquet 格式转换
 │
-├── scripts/                        # 入口脚本
-│   ├── run_npc_data_gen.py         # Stage 1 入口（行为树生成）
-│   ├── run_npc_solve_task.py       # Stage 2 入口（Agent求解）
-│   ├── run_npc_rubrics.py          # Stage 3 入口（Rubric评估）
-│   ├── make_filtered_npc_data.py   # Stage 4 入口（数据过滤+格式化）
-│   ├── expand_personas.py          # NPC种子扩充（LLM批量生成）
-│   ├── expand_from_failures.py     # 飞轮迭代：从失败case扩展行为树
-│   ├── run_flywheel.sh             # 三轮飞轮一键编排（自动串联全流程）
-│   ├── generate_warmup_data.py     # Warm-up数据生成（纯代码，零API成本）
-│   ├── run_warmup_training.sh      # Phase 1 训练脚本
-│   ├── run_npc_training.sh         # Phase 2 训练脚本（支持H200/A100/4090）
+├── scripts/                        # ⑥ 入口脚本（数据管线 / 飞轮 / 训练 / 服务）
+│   ├── run_npc_data_gen.py         # Stage 1 入口：行为树 + 任务生成
+│   ├── run_npc_solve_task.py       # Stage 2 入口：Agent 求解
+│   ├── run_npc_rubrics.py          # Stage 3 入口：Rubric 评估
+│   ├── make_filtered_npc_data.py   # Stage 4 入口：过滤 PASS + 转 parquet
+│   ├── evaluate.py                 # 规则/LLM 评估（--mode rule 零成本快反馈）
+│   ├── expand_personas.py          # NPC 种子扩充（LLM 批量生成）
+│   ├── expand_from_failures.py     # 飞轮迭代：从失败 case 扩展行为树
+│   ├── run_flywheel.sh             # 三轮数据飞轮一键编排（自动串联全流程）
+│   ├── generate_warmup_data.py     # Warm-up 数据生成（纯代码，零 API 成本）
+│   ├── run_warmup_training.sh      # Phase 1 训练：Warm-up（规则奖励）
+│   ├── run_npc_training.sh         # Phase 2 训练：同步 GRPO/GSPO（H200/A100/4090）
 │   ├── quantize_model.py           # 模型量化（SmoothQuant INT8 / FP8）
 │   └── test_api.py                 # 推理服务端到端测试
 │
-├── inference/                      # 推理服务层
-│   ├── npc_server.py               # FastAPI服务（init/chat/reset/status）
-│   └── world_state_adapter.py      # Mock/Production双模式适配器
+├── inference/                      # ⑦ 推理服务层：FastAPI + Redis 会话
+│   ├── npc_server.py               # FastAPI 服务（init/chat/reset/status）
+│   └── world_state_adapter.py      # Mock / Production 双模式适配器
 │
-└── data/                           # 运行时产出（.gitignore）
+└── data/                           # 运行时产出（.gitignore，克隆后为空）
     ├── generated_tasks.jsonl       # Stage 1 输出
     ├── solved_tasks.jsonl          # Stage 2 输出
     ├── evaluated_tasks.jsonl       # Stage 3 输出
-    ├── warmup_train.json           # Warm-up训练数据
-    ├── train.json / train.parquet  # 最终训练数据
+    ├── warmup_train.json           # Warm-up 训练数据
+    ├── train.json / train.parquet  # 最终训练数据（Stage 4 产出）
     └── val.json / val.parquet      # 验证数据
 ```
 
