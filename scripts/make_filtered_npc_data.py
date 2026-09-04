@@ -8,6 +8,7 @@ import sys
 import json
 import argparse
 import random
+import hashlib
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
@@ -32,6 +33,39 @@ def split_samples_by_group(samples, split_ratio=0.9, seed=42, group_key="npc_id"
     train_data = [sample for gid in group_ids if gid in train_groups for sample in groups[gid]]
     val_data = [sample for gid in group_ids if gid not in train_groups for sample in groups[gid]]
     return train_data, val_data, train_groups, set(group_ids) - train_groups
+
+
+def _canonical_sample_key(sample):
+    """Build a stable key for exact duplicate trajectories/scenarios.
+
+    Do not key only on the natural-language prompt: two tasks can share a
+    sentence while having different world state or expected tool paths.
+    """
+    extra = sample.get("extra_info", {})
+    payload = {
+        "npc_id": extra.get("npc_id", ""),
+        "scenario_id": extra.get("scenario_id", ""),
+        "test_type": extra.get("test_type", ""),
+        "prompt": sample.get("prompt", []),
+        "expected_path": extra.get("expected_path", []),
+        "hack_path": extra.get("hack_path", []),
+        "tool_return_expected": extra.get("tools_kwargs", {}).get("mock_tool", {}).get("create_kwargs", {}).get("tool_return_expected", {}),
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def deduplicate_samples(samples):
+    """Remove exact duplicates while preserving first-seen order."""
+    seen = set()
+    unique = []
+    for sample in samples:
+        key = _canonical_sample_key(sample)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(sample)
+    return unique, len(samples) - len(unique)
 
 
 def main():
@@ -124,7 +158,8 @@ def main():
         }
         train_samples.append(sample)
 
-    print(f"Training samples created: {len(train_samples)}")
+    train_samples, duplicate_count = deduplicate_samples(train_samples)
+    print(f"Training samples created: {len(train_samples)} (removed exact duplicates: {duplicate_count})")
 
     # Group split: all tasks/repeats from one NPC stay in exactly one split.
     train_data, val_data, train_groups, val_groups = split_samples_by_group(
