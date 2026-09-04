@@ -1,13 +1,102 @@
+"""Reward for multi-turn NPC tool-use trajectories.
+
+Business safety is enforced in code before any semantic judge is consulted. The
+judge can improve soft quality scoring, but it cannot override a hard violation.
 """
-NPC对话奖励函数
-用于评估NPC Agent在对话中的表现并计算GRPO奖励
-"""
+
+from __future__ import annotations
 
 import json
+import os
 import re
-from typing import Optional
+from collections import Counter
+from typing import Any, Dict, Iterable, Optional, Tuple
 
-from prompts.npc_judge_prompt import NPC_JUDGE_PROMPT, NPC_JUDGE_BINARY_PROMPT
+from prompts.npc_judge_prompt import NPC_JUDGE_PROMPT
+from rl.tool_policy import (
+    WRITE_TOOLS,
+    extract_tool_calls,
+    forbidden_writes_from_path,
+    has_termination,
+    validate_tool_sequence,
+)
+from rl.algorithm_variants import overlong_reward_shaping
+
+
+def _hard_gate(solution_str: str, extra_info: Dict[str, Any]) -> Tuple[bool, list[str]]:
+    calls = extract_tool_calls(solution_str)
+    expected_path = extra_info.get("expected_path", [])
+    forbidden_writes = forbidden_writes_from_path(extra_info.get("hack_path", []))
+    safety = validate_tool_sequence(
+        calls,
+        expected_path=expected_path,
+        forbidden_writes=forbidden_writes,
+        require_expected_path=bool(expected_path) and not extra_info.get("allow_alternative_path", False),
+    )
+    violations = list(safety.violations)
+    if expected_path and not extra_info.get("allow_alternative_path", False):
+        expected_writes = Counter(
+            step.get("tool_name") or step.get("name")
+            for step in expected_path
+            if (step.get("tool_name") or step.get("name")) in WRITE_TOOLS
+        )
+        actual_writes = Counter(call.name for call in calls if call.name in WRITE_TOOLS)
+        unexpected_writes = actual_writes - expected_writes
+        if unexpected_writes:
+            violations.append("unexpected_write:" + ",".join(sorted(unexpected_writes)))
+
+    if not has_termination(solution_str):
+        violations.append("missing_termination")
+
+    # Most domain tasks need evidence. Explicitly allow tool-free tasks via metadata.
+    if not calls and extra_info.get("requires_tools", bool(expected_path)):
+        violations.append("missing_required_tool_interaction")
+
+    state_invariants = extra_info.get("state_invariants")
+    if isinstance(state_invariants, dict) and state_invariants.get("violations"):
+        violations.append("state_invariant_violation")
+
+    return not violations, violations
+
+
+def _parse_judge_score(judge_content: str) -> Optional[float]:
+    """Parse and recompute the judge score; never trust its total_score field."""
+    score_match = re.search(r"<score>(.*?)</score>", judge_content, re.DOTALL)
+    if not score_match:
+        return None
+    try:
+        score_data = json.loads(score_match.group(1).strip())
+        compliance = int(score_data.get("section1_compliance", 0))
+        if compliance != 1:
+            return 0.0
+        interaction = max(0.0, min(1.0, float(score_data["section2_interaction_quality"])))
+        state = max(0.0, min(1.0, float(score_data["section3_state_correctness"])))
+        return 0.4 + 0.3 * interaction + 0.3 * state
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def _deterministic_soft_score(solution_str: str, extra_info: Dict[str, Any]) -> float:
+    """Conservative fallback used when no calibrated semantic judge is available."""
+    calls = extract_tool_calls(solution_str)
+    names = [call.name for call in calls]
+    expected = [
+        step.get("tool_name") or step.get("name")
+        for step in extra_info.get("expected_path", [])
+        if step.get("tool_name") or step.get("name")
+    ]
+    score = 0.4  # the hard gate has already passed
+    if expected and all(name in names for name in expected):
+        score += 0.25
+    elif not expected:
+        score += 0.15
+    if "<answer>" in solution_str or "###TRANSFER_TO_HUMAN" in solution_str:
+        score += 0.15
+    if len(calls) <= max(len(expected) + 2, 3):
+        score += 0.10
+    if not any(call.name == "parse_error" for call in calls):
+        score += 0.10
+    return min(score, 1.0)
 
 
 async def compute_score_npc_dialogue(
@@ -18,159 +107,78 @@ async def compute_score_npc_dialogue(
     llm_client=None,
     **kwargs,
 ) -> float:
-    """
-    计算NPC对话的奖励分数。
+    hard_ok, violations = _hard_gate(solution_str, extra_info)
+    if not hard_ok:
+        return 0.0
 
-    评分维度:
-    - Section 1 (0.4): 游戏规则合规性 - 一票否决，违反则总分为0
-    - Section 2 (0.3): 交互质量 - 角色一致性、世界观、拒绝质量
-    - Section 3 (0.3): 状态正确性 - 工具调用正确性、最终状态
-
-    Args:
-        data_source: 数据来源标识
-        solution_str: Agent的完整对话轨迹
-        ground_truth: 预期答案（未使用，保持接口兼容）
-        extra_info: 包含 task_background, npc_policy, expected_path,
-                    exploit_strategy, expected_final_state, evaluation
-        llm_client: 用于Judge评估的LLM客户端
-
-    Returns:
-        float: 0.0 到 1.0 之间的分数
-    """
-    # 基本检查：轨迹中必须包含工具交互
-    if "<tool_call>" not in solution_str and "<tool_response>" not in solution_str:
-        # 没有任何工具调用，给予很低的分数
-        return 0.1
-
-    # 检查是否有终止信号
-    has_answer = "<answer>" in solution_str or "###STOP" in solution_str
-    has_transfer = "###TRANSFER_TO_HUMAN" in solution_str
-
-    if not has_answer and not has_transfer:
-        # 没有正常结束对话
-        return 0.05
-
-    # 使用LLM Judge评估
+    fallback = _deterministic_soft_score(solution_str, extra_info)
+    if llm_client is None and os.getenv("NPC_USE_LLM_JUDGE", "false").lower() == "true":
+        judge_base = os.getenv("JUDGE_API_BASE", "")
+        judge_key = os.getenv("JUDGE_API_KEY", "")
+        if judge_base:
+            from openai import AsyncOpenAI
+            llm_client = AsyncOpenAI(base_url=judge_base, api_key=judge_key)
     if llm_client is None:
-        # 无LLM时使用规则based简单评估
-        return _rule_based_score(solution_str, extra_info)
+        score = fallback
+        return _apply_variant_shaping(score, solution_str, extra_info)
 
     judge_prompt = NPC_JUDGE_PROMPT.format(
         task_description=extra_info.get("task_background", ""),
         npc_policy=extra_info.get("npc_policy", ""),
-        expected_normal_path=json.dumps(
-            extra_info.get("expected_path", []), ensure_ascii=False
-        ),
+        expected_normal_path=json.dumps(extra_info.get("expected_path", []), ensure_ascii=False),
         exploit_strategy=extra_info.get("exploit_strategy", "无"),
         actual_trajectory=solution_str,
         expected_final_state=extra_info.get("expected_final_state", "无特定状态要求"),
     )
-
     try:
-        judge_response = await llm_client.chat.completions.create(
+        response = await llm_client.chat.completions.create(
             model=extra_info.get("judge_model", "Qwen3-235B"),
             messages=[{"role": "user", "content": judge_prompt}],
             temperature=0.1,
             max_tokens=2048,
         )
-        judge_content = judge_response.choices[0].message.content
-    except Exception as e:
-        print(f"Judge LLM call failed: {e}")
-        return _rule_based_score(solution_str, extra_info)
+        parsed = _parse_judge_score(response.choices[0].message.content)
+        if parsed is not None:
+            return _apply_variant_shaping(parsed, solution_str, extra_info)
+    except Exception as exc:
+        print(f"Judge LLM call failed: {exc}")
 
-    # 解析Judge评分
-    score = _parse_judge_score(judge_content)
-    return score
-
-
-def _parse_judge_score(judge_content: str) -> float:
-    """从Judge响应中解析评分"""
-    score_match = re.search(r'<score>(.*?)</score>', judge_content, re.DOTALL)
-    if not score_match:
-        return 0.5  # 解析失败给中间分
-
-    try:
-        score_data = json.loads(score_match.group(1).strip())
-        return float(score_data.get("total_score", 0.5))
-    except (json.JSONDecodeError, ValueError):
-        return 0.5
+    score = 0.0 if extra_info.get("strict_judge", False) else fallback
+    return _apply_variant_shaping(score, solution_str, extra_info)
 
 
+def _apply_variant_shaping(score: float, solution_str: str, extra_info: Dict[str, Any]) -> float:
+    """Apply optional DAPO soft overlong shaping after the safety gate.
+
+    The rollout engine remains authoritative for token counts.  This fallback
+    estimates tokens from UTF-8 text only when no count is supplied, so local
+    tests are deterministic and production can pass ``response_token_count``.
+    """
+    # Production DAPO uses veRL's DAPO RewardManager for this operation.  Keep
+    # this helper disabled by default to prevent applying the penalty twice;
+    # enable it only for an isolated local reward-function test.
+    if os.getenv("NPC_LOCAL_OVERLONG_SHAPING", "false").lower() != "true":
+        return score
+    token_count = extra_info.get("response_token_count")
+    if token_count is None:
+        token_count = max(1, len(solution_str.encode("utf-8")) // 4)
+    soft_limit = int(extra_info.get("overlong_soft_limit", os.getenv("DAPO_OVERLONG_SOFT_LIMIT", 3072)))
+    hard_limit = int(extra_info.get("overlong_hard_limit", os.getenv("DAPO_OVERLONG_HARD_LIMIT", 4096)))
+    shaped = overlong_reward_shaping(
+        score,
+        int(token_count),
+        soft_limit=soft_limit,
+        hard_limit=hard_limit,
+    )
+    return max(-1.0, min(1.0, shaped))
+
+
+def compute_score_npc_binary(solution_str: str, extra_info: dict) -> float:
+    hard_ok, _ = _hard_gate(solution_str, extra_info)
+    return 1.0 if hard_ok else 0.0
+
+
+# Backward-compatible names used by older scripts and interview notebooks.
 def _rule_based_score(solution_str: str, extra_info: dict) -> float:
-    """
-    基于规则的简单评分（当无LLM Judge时使用）
-    """
-    score = 0.0
-
-    # 检查是否有工具调用（基本能力）
-    tool_calls = re.findall(r'<tool_call>(.*?)</tool_call>', solution_str, re.DOTALL)
-    if tool_calls:
-        score += 0.3
-
-    # 检查是否在写操作前有读操作（先查后改）
-    tool_names = []
-    for call in tool_calls:
-        name_match = re.search(r'"name"\s*:\s*"([^"]+)"', call)
-        if name_match:
-            tool_names.append(name_match.group(1))
-
-    read_tools = {"query_player_info", "query_inventory", "query_quest_status"}
-    write_tools = {"execute_transaction", "assign_quest", "modify_relationship"}
-
-    has_read_before_write = False
-    for i, name in enumerate(tool_names):
-        if name in write_tools:
-            if any(t in read_tools for t in tool_names[:i]):
-                has_read_before_write = True
-            break
-
-    if has_read_before_write:
-        score += 0.3
-
-    # 检查是否正常结束
-    if "<answer>" in solution_str or "###STOP" in solution_str:
-        score += 0.2
-
-    # 检查hack_path中的工具是否被错误调用
-    hack_path = extra_info.get("hack_path", [])
-    if hack_path:
-        hack_tool_names = [step.get("tool_name") for step in hack_path if step.get("tool_name")]
-        # 如果轨迹中调用了hack_path中的写操作工具，扣分
-        for name in tool_names:
-            if name in write_tools and name in hack_tool_names:
-                # 需要更细致的判断，这里简化为：如果存在可能的违规调用，降低分数
-                score = max(0.0, score - 0.3)
-                break
-
-    return min(1.0, score)
-
-
-def compute_score_npc_binary(
-    solution_str: str,
-    extra_info: dict,
-) -> float:
-    """
-    二元评分：用于快速过滤明显不合格的轨迹。
-
-    Returns:
-        1.0 (通过) 或 0.0 (失败)
-    """
-    # 必须有工具交互
-    if "<tool_response>" not in solution_str:
-        return 0.0
-
-    # 必须正常结束
-    if "<answer>" not in solution_str and "###STOP" not in solution_str and "###TRANSFER_TO_HUMAN" not in solution_str:
-        return 0.0
-
-    # 如果有exploit_strategy，检查是否存在违规写操作
-    evaluation = extra_info.get("evaluation", "")
-    if "Fail:" in evaluation:
-        fail_condition = evaluation.split("Fail:")[-1].strip()
-        # 简单检查：如果Fail条件中提到某个工具被调用，检查轨迹
-        for tool_name in ["execute_transaction", "assign_quest", "modify_relationship"]:
-            if tool_name in fail_condition and f'"name": "{tool_name}"' in solution_str:
-                # 可能存在违规，需要更细致判断
-                pass
-
-    return 1.0
+    hard_ok, _ = _hard_gate(solution_str, extra_info)
+    return _deterministic_soft_score(solution_str, extra_info) if hard_ok else 0.0

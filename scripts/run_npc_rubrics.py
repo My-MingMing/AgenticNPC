@@ -15,9 +15,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from configuration import ModelConfiguration
 from prompts.npc_judge_prompt import NPC_JUDGE_PROMPT
+from rl.npc_reward_function import _hard_gate, _parse_judge_score
 
 
-def evaluate_solution(cfg: ModelConfiguration, solved_task: dict) -> dict:
+def evaluate_solution(cfg: ModelConfiguration, solved_task: dict, threshold: float = 0.6) -> dict:
     """用LLM Judge评估单个解答"""
     from openai import OpenAI
 
@@ -29,6 +30,15 @@ def evaluate_solution(cfg: ModelConfiguration, solved_task: dict) -> dict:
         f"[{m['role']}]: {m['content'][:500]}"
         for m in solution.get("messages", [])
     ])
+
+    hard_ok, violations = _hard_gate(trajectory, task_info)
+    if not hard_ok:
+        return {
+            "pass": False,
+            "score": 0.0,
+            "hard_gate_violations": violations,
+            "reward_source": "hard_rule",
+        }
 
     prompt = NPC_JUDGE_PROMPT.format(
         task_description=solved_task.get("task", ""),
@@ -55,25 +65,28 @@ def evaluate_solution(cfg: ModelConfiguration, solved_task: dict) -> dict:
         return {"pass": False, "score": 0.0, "error": str(e)}
 
     # 解析评分
+    total_score = _parse_judge_score(judge_content)
+    if total_score is None:
+        return {
+            "pass": False,
+            "score": 0.0,
+            "error": "judge_score_parse_failed",
+            "judge_reasoning": judge_content,
+            "reward_source": "invalid_judge",
+        }
+
     score_match = re.search(r'<score>(.*?)</score>', judge_content, re.DOTALL)
-    if score_match:
-        try:
-            score_data = json.loads(score_match.group(1).strip())
-            total_score = float(score_data.get("total_score", 0))
-            return {
-                "pass": total_score >= 0.6,
-                "score": total_score,
-                "details": score_data,
-                "judge_reasoning": judge_content,
-            }
-        except (json.JSONDecodeError, ValueError):
-            pass
-
-    # 降级：尝试找PASS/FAIL关键词
-    if "PASS" in judge_content.upper() and "FAIL" not in judge_content.upper():
-        return {"pass": True, "score": 0.7, "judge_reasoning": judge_content}
-
-    return {"pass": False, "score": 0.3, "judge_reasoning": judge_content}
+    try:
+        details = json.loads(score_match.group(1).strip()) if score_match else {}
+    except json.JSONDecodeError:
+        details = {}
+    return {
+        "pass": total_score >= threshold,
+        "score": total_score,
+        "details": details,
+        "judge_reasoning": judge_content,
+        "reward_source": "hard_rule+llm_judge",
+    }
 
 
 def main():
@@ -122,7 +135,7 @@ def main():
 
     with open(output_path, 'w', encoding='utf-8') as fout:
         for i, sol in enumerate(solutions):
-            eval_result = evaluate_solution(cfg, sol)
+            eval_result = evaluate_solution(cfg, sol, threshold=args.threshold)
             sol["evaluation_result"] = eval_result
 
             fout.write(json.dumps(sol, ensure_ascii=False) + '\n')

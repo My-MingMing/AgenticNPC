@@ -7,8 +7,31 @@ import os
 import sys
 import json
 import argparse
+import random
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+
+
+def split_samples_by_group(samples, split_ratio=0.9, seed=42, group_key="npc_id"):
+    """Deterministically split whole identity groups to prevent repeat leakage."""
+    if not 0.0 < split_ratio < 1.0:
+        raise ValueError("split_ratio must be between 0 and 1")
+
+    groups = {}
+    for sample in samples:
+        group_id = sample.get("extra_info", {}).get(group_key, "unknown")
+        groups.setdefault(group_id, []).append(sample)
+
+    group_ids = sorted(groups)
+    random.Random(seed).shuffle(group_ids)
+    if len(group_ids) > 1:
+        split_idx = min(max(int(len(group_ids) * split_ratio), 1), len(group_ids) - 1)
+    else:
+        split_idx = len(group_ids)
+    train_groups = set(group_ids[:split_idx])
+    train_data = [sample for gid in group_ids if gid in train_groups for sample in groups[gid]]
+    val_data = [sample for gid in group_ids if gid not in train_groups for sample in groups[gid]]
+    return train_data, val_data, train_groups, set(group_ids) - train_groups
 
 
 def main():
@@ -17,6 +40,7 @@ def main():
     parser.add_argument("--output_train", default="../data/train.json", help="Train output")
     parser.add_argument("--output_val", default="../data/val.json", help="Val output")
     parser.add_argument("--split_ratio", type=float, default=0.9, help="Train/val split")
+    parser.add_argument("--seed", type=int, default=42, help="Deterministic group split seed")
     args = parser.parse_args()
 
     input_path = os.path.join(os.path.dirname(__file__), args.input)
@@ -68,6 +92,10 @@ def main():
                 "ground_truth": ""
             },
             "extra_info": {
+                "npc_id": sol.get("npc_id", "unknown"),
+                "npc_type": sol.get("npc_type", "unknown"),
+                "scenario_id": sol.get("scenario_id", ""),
+                "test_type": sol.get("test_type", "unknown"),
                 "need_tools_kwargs": True,
                 "task_background": task_info.get("user_background", sol.get("task", "")),
                 "npc_policy": task_info.get("npc_policy", ""),
@@ -76,6 +104,7 @@ def main():
                 "exploit_strategy": task_info.get("exploit_strategy", ""),
                 "expected_path": task_info.get("expected_path", []),
                 "hack_path": task_info.get("hack_path", []),
+                "requires_tools": bool(task_info.get("expected_path", [])),
                 "tools_kwargs": {
                     "mock_tool": {
                         "create_kwargs": {
@@ -97,10 +126,10 @@ def main():
 
     print(f"Training samples created: {len(train_samples)}")
 
-    # 划分train/val
-    split_idx = int(len(train_samples) * args.split_ratio)
-    train_data = train_samples[:split_idx]
-    val_data = train_samples[split_idx:]
+    # Group split: all tasks/repeats from one NPC stay in exactly one split.
+    train_data, val_data, train_groups, val_groups = split_samples_by_group(
+        train_samples, split_ratio=args.split_ratio, seed=args.seed
+    )
 
     os.makedirs(os.path.dirname(output_train), exist_ok=True)
 
@@ -112,6 +141,7 @@ def main():
 
     print(f"Train: {len(train_data)} → {output_train}")
     print(f"Val: {len(val_data)} → {output_val}")
+    print(f"Group split: train={len(train_groups)}, val={len(val_groups)}, seed={args.seed}")
 
 
 if __name__ == "__main__":

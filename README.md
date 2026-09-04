@@ -13,7 +13,7 @@
 | 创新点 | 描述 |
 |--------|------|
 | **领域自适应数据飞轮** | 从领域种子自动合成行为树→扩展分支→生成对抗样本，每轮迭代自举更难数据 |
-| **对抗鲁棒性训练** | 48种对抗策略（7大类）覆盖社会工程、权限提升、注入攻击等真实攻击面 |
+| **对抗鲁棒性训练** | 48条真实枚举策略（7大类）覆盖经济、任务、社工、协议注入、重放、竞态和组合攻击 |
 | **领域工具增强推理** | 18工具×7子系统的结构化工具库，显式前置约束链，强制"验证→决策→执行"范式 |
 | **两阶段课程学习** | Phase 1 领域规则Warm-up（纯代码生成，零成本）→ Phase 2 Agentic RL（三维度奖励） |
 | **一票否决奖励机制** | 规则违反直接归零，防止reward hacking，确保安全约束绝对优先 |
@@ -360,15 +360,28 @@ bash scripts/run_npc_training.sh
 # bash scripts/run_npc_training.sh a100    # 4x A100 80GB
 # bash scripts/run_npc_training.sh 4090    # 8x RTX 4090 24GB
 
-# 切换为GSPO算法（序列级优化，适合多轮tool-use，Qwen3训练同款）:
-# RL_ALGORITHM=gspo bash scripts/run_npc_training.sh
+# 训练入口支持 `RL_VARIANT=grpo|dapo|ngrpo`；NGRPO 需要先安装项目的 veRL estimator patch。
+
+```bash
+# GRPO baseline（默认）
+bash scripts/run_npc_training.sh
+# DAPO 对照
+RL_VARIANT=dapo bash scripts/run_npc_training.sh a100
+# NGRPO 对照（仅在已应用 patch 的 veRL 环境）
+NGRPO_PATCHED_VERL=1 RL_VARIANT=ngrpo bash scripts/run_npc_training.sh
+```
+
+启动前可只检查配置而不申请 GPU：
+`python scripts/validate_rl_variant.py dapo`。
 ```
 
 算法选择:
 | 算法 | 优化粒度 | 特点 | 状态 |
 |------|:---:|------|:---:|
-| GRPO (默认) | token-level | 社区成熟，已验证有效 | ✅ 已训练 |
-| GSPO (备选) | sequence-level | 天然适配多轮tool-use，无需token对齐，Qwen3同款 | 🔜 下一步 |
+| GRPO | sample-level | 对照基线；组内均值/标准差归一化 | 已配置 |
+| DAPO | token-level | veRL DAPO RewardManager、Clip-Higher、Dynamic Sampling 配置、Overlong shaping | 已配置；需锁定 veRL 版本验证 filter_groups |
+| NGRPO | sample-level | 自定义 veRL advantage estimator，std floor=0.05 | 需 `NGRPO_PATCHED_VERL=1` |
+| GSPO (研究候选) | sequence-level | 需要序列级ratio/clip源码接入与对照实验 | 未实现 |
 
 
 ### Step 7: 飞轮迭代（Round 2-3）
@@ -568,7 +581,8 @@ redis-cli ping  # 应返回 PONG
 |------|------|-----------------|
 | GRPO | DeepSeekMath (Shao et al., 2024) | RL训练的策略优化算法（默认） |
 | GSPO | Qwen Team, 2025 ([arXiv:2507.18071](https://arxiv.org/abs/2507.18071)) | 备选算法，序列级优化更适配多轮tool-use |
-| DAPO | ByteDance Seed & Tsinghua (Yu et al., 2025) ([arXiv:2503.14476](https://arxiv.org/abs/2503.14476)) | 两阶段RL均采用 `reward_model.reward_manager=dapo`，提供动态采样与奖励聚合管理 |
+| DAPO | ByteDance Seed & Tsinghua (Yu et al., 2025) ([arXiv:2503.14476](https://arxiv.org/abs/2503.14476)) | 入口配置 DAPO RewardManager、Clip-Higher、Dynamic Sampling 与 Overlong shaping；`use_dynamic_bsz`仅是吞吐优化。真实 `filter_groups` 行为需在锁定的 veRL commit 上做最小 batch 验证 |
+| NGRPO | 项目自定义对照变体 | Normalized-GRPO + std floor，避免 NPC 近确定性 group 放大梯度；通过 `rl/verl_patches/ngrpo_core_algos.py` 注册 |
 | Self-Instruct | Wang et al., 2023 | NPC种子自动扩充 |
 | Persona Hub | Ge et al., 2025 | 多样性角色生成方法论 |
 | ReAct | Yao et al., 2022 | Agent推理+行动的交替模式 |

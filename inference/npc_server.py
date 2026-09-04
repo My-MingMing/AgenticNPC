@@ -6,11 +6,12 @@ NPC对话推理服务
 import os
 import json
 import asyncio
+import uuid
 from typing import Dict, Any, List, Optional
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import redis.asyncio as redis
 
 
@@ -31,8 +32,10 @@ class NPCChatRequest(BaseModel):
 
 class NPCChatResponse(BaseModel):
     npc_message: str
-    tool_calls: List[Dict[str, Any]] = []
-    state_changes: List[Dict[str, Any]] = []
+    tool_calls: List[Dict[str, Any]] = Field(default_factory=list)
+    state_changes: List[Dict[str, Any]] = Field(default_factory=list)
+    request_id: str
+    requires_tool_execution: bool = False
     session_active: bool = True
 
 
@@ -44,6 +47,7 @@ class NPCResetRequest(BaseModel):
 
 redis_client: Optional[redis.Redis] = None
 llm_client = None
+session_locks: Dict[str, asyncio.Lock] = {}
 
 
 @asynccontextmanager
@@ -94,6 +98,13 @@ async def init_npc_session(req: NPCInitRequest):
 @app.post("/npc/chat", response_model=NPCChatResponse)
 async def npc_chat(req: NPCChatRequest):
     """处理玩家消息，返回NPC回复"""
+    lock = session_locks.setdefault(req.session_id, asyncio.Lock())
+    async with lock:
+        return await _npc_chat_locked(req)
+
+
+async def _npc_chat_locked(req: NPCChatRequest):
+    """Serialize one session to avoid lost Redis history updates."""
     session_key = f"npc_session:{req.session_id}"
     session = await redis_client.hgetall(session_key)
 
@@ -122,6 +133,7 @@ async def npc_chat(req: NPCChatRequest):
 
     # 解析NPC回复（提取文本、工具调用、状态变更）
     npc_message, tool_calls, state_changes = _parse_npc_response(npc_raw_response, world_state)
+    request_id = str(uuid.uuid4())
 
     # 更新会话历史
     history.append({"role": "player", "content": req.player_message})
@@ -142,6 +154,8 @@ async def npc_chat(req: NPCChatRequest):
         npc_message=npc_message,
         tool_calls=tool_calls,
         state_changes=state_changes,
+        request_id=request_id,
+        requires_tool_execution=bool(tool_calls),
         session_active=session_active,
     )
 
@@ -150,6 +164,7 @@ async def npc_chat(req: NPCChatRequest):
 async def reset_session(req: NPCResetRequest):
     """重置对话会话"""
     await redis_client.delete(f"npc_session:{req.session_id}")
+    session_locks.pop(req.session_id, None)
     return {"status": "ok"}
 
 

@@ -50,6 +50,7 @@ NPC_SYSTEM_PROMPT_TEMPLATE = """你是一个游戏NPC。你必须严格遵守以
 
 ## 规则
 - 交易前必须先用query_player_info查询玩家等级和金币
+- 交易前必须用query_inventory确认库存，并用check_item_requirements验证购买资格
 - 不能出售超过玩家等级要求的物品
 - 不能在玩家金币不足时完成交易
 - 分配任务前必须用query_quest_status检查前置条件
@@ -114,6 +115,12 @@ def generate_purchase_scenario() -> Dict[str, Any]:
 
     if should_sell:
         correct_tool_calls.append(
+            {"name": "query_inventory", "arguments": {"owner_id": "npc_shop", "category": "all"}}
+        )
+        correct_tool_calls.append(
+            {"name": "check_item_requirements", "arguments": {"player_id": player["player_id"], "item_id": item["id"]}}
+        )
+        correct_tool_calls.append(
             {"name": "execute_transaction", "arguments": {"player_id": player["player_id"], "item_id": item["id"], "action": "buy"}}
         )
         expected_answer_keywords = ["购买成功", "交易完成", "给你", item["name"]]
@@ -136,10 +143,14 @@ def generate_purchase_scenario() -> Dict[str, Any]:
         "query_inventory": {
             "items": [item],
         },
+        "check_item_requirements": {
+            "meets_requirements": meets_level,
+            "missing_requirements": [] if meets_level else [f"level:{item['level_req']}"],
+        },
         "execute_transaction": {
             "success": should_sell,
             "new_gold_balance": player["gold"] - item["price"] if should_sell else player["gold"],
-            "error": None if should_sell else ("金币不足" if can_afford else "等级不足"),
+            "error": None if should_sell else ("等级不足" if not meets_level else "金币不足"),
         },
     }
 
@@ -302,6 +313,16 @@ def generate_calculation_scenario() -> Dict[str, Any]:
 
     correct_tool_calls = [
         {"name": "query_player_info", "arguments": {"player_id": player["player_id"], "info_type": "all"}},
+        {"name": "query_inventory", "arguments": {"owner_id": "npc_shop", "category": "all"}},
+        {"name": "check_item_requirements", "arguments": {"player_id": player["player_id"], "item_id": item["id"]}},
+        {
+            "name": "calculate_price",
+            "arguments": {
+                "item_id": item["id"],
+                "player_id": player["player_id"],
+                "action": "buy",
+            },
+        },
     ]
 
     if can_afford:
@@ -320,6 +341,16 @@ def generate_calculation_scenario() -> Dict[str, Any]:
             "player_level": player["level"],
             "gold_balance": player["gold"],
             "faction_reputation": {faction: rep_tier},
+        },
+        "query_inventory": {"items": [item]},
+        "check_item_requirements": {
+            "meets_requirements": True,
+            "missing_requirements": [],
+        },
+        "calculate_price": {
+            "unit_price": item["price"],
+            "discount": discount,
+            "final_price": final_price,
         },
         "execute_transaction": {
             "success": can_afford,

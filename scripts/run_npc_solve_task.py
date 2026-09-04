@@ -8,6 +8,7 @@ import sys
 import json
 import yaml
 import argparse
+import hashlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -66,8 +67,12 @@ def main():
             )
             return {
                 "npc_id": npc_data["id"],
+                "npc_type": npc_data.get("npc_type", "unknown"),
                 "task": task_info.get("task", ""),
                 "test_type": task_info.get("test_type", "unknown"),
+                "scenario_id": hashlib.sha256(
+                    (npc_data["id"] + "\n" + task_info.get("scenario", task_info.get("task", ""))).encode("utf-8")
+                ).hexdigest()[:16],
                 "repeat_idx": repeat_idx,
                 "solution": result,
                 "success": True,

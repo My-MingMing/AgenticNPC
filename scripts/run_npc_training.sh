@@ -3,7 +3,7 @@
 # NPC对话模型 - Agentic RL训练脚本（单轮）
 #
 # 设计要点：
-#   - GRPO + 非对称clip (low=0.2, high=0.28)，无显式KL约束
+#   - GRPO + 非对称clip (low=0.2, high=0.28) + 小KL约束
 #   - 每轮训练 1 epoch（数据飞轮负责课程递增，超参保持稳定）
 #   - 训练后自动merge checkpoint
 #   - 超参数各轮一致，只变数据和模型初始化
@@ -43,7 +43,7 @@ case "${HW_PROFILE}" in
     MAX_PROMPT_LENGTH=3072
     MAX_RESPONSE_LENGTH=4096
     MAX_TURNS=10
-    LR=1e-6
+    LR_DEFAULT=5e-7
     GPU_MEMORY_UTIL=0.85
     PARAM_OFFLOAD=True
     OPTIMIZER_OFFLOAD=True
@@ -63,7 +63,7 @@ case "${HW_PROFILE}" in
     MAX_PROMPT_LENGTH=2048
     MAX_RESPONSE_LENGTH=2048
     MAX_TURNS=8
-    LR=1e-6
+    LR_DEFAULT=5e-7
     GPU_MEMORY_UTIL=0.92
     PARAM_OFFLOAD=True
     OPTIMIZER_OFFLOAD=True
@@ -83,7 +83,7 @@ case "${HW_PROFILE}" in
     MAX_PROMPT_LENGTH=4096
     MAX_RESPONSE_LENGTH=10000
     MAX_TURNS=15
-    LR=1e-6
+    LR_DEFAULT=5e-7
     GPU_MEMORY_UTIL=0.90
     PARAM_OFFLOAD=False
     OPTIMIZER_OFFLOAD=False
@@ -95,15 +95,21 @@ case "${HW_PROFILE}" in
 esac
 
 # ====== 算法选择 ======
-# 支持: grpo (默认，已验证) | gspo (序列级优化，适合多轮tool-use)
-# 用法: RL_ALGORITHM=gspo bash run_npc_training.sh h200
-RL_ALGORITHM="${RL_ALGORITHM:-grpo}"
+# 本入口只承诺GRPO。GSPO需要序列级ratio/clip实现，不能只替换adv_estimator。
+RL_VARIANT="${RL_VARIANT:-${RL_ALGORITHM:-grpo}}"
+export RL_VARIANT
+python3 "${PROJECT_ROOT}/scripts/validate_rl_variant.py" "${RL_VARIANT}" --max-response-length "${MAX_RESPONSE_LENGTH}"
+case "${RL_VARIANT,,}" in
+  grpo) ADV_ESTIMATOR=grpo; REWARD_MANAGER=naive; NORM_STD=True; CLIP_RATIO_LOW=0.20; CLIP_RATIO_HIGH=0.20; LOSS_AGG_MODE=sample-mean; USE_KL_REWARD=True; USE_KL_LOSS=True; DAPO_OVERRIDES=() ;;
+  dapo) ADV_ESTIMATOR=grpo; REWARD_MANAGER=dapo; NORM_STD=False; CLIP_RATIO_LOW=0.20; CLIP_RATIO_HIGH=0.28; LOSS_AGG_MODE=token-mean; USE_KL_REWARD=False; USE_KL_LOSS=False; DAPO_OVERRIDES=(algorithm.filter_groups.enable=True algorithm.filter_groups.metric=seq_final_reward algorithm.filter_groups.max_num_gen_batches=4 reward_model.reward_kwargs.max_resp_len=${MAX_RESPONSE_LENGTH} reward_model.reward_kwargs.overlong_buffer_cfg.enable=True reward_model.reward_kwargs.overlong_buffer_cfg.len=512 reward_model.reward_kwargs.overlong_buffer_cfg.penalty_factor=1.0) ;;
+  ngrpo) ADV_ESTIMATOR=ngrpo; REWARD_MANAGER=naive; NORM_STD=True; CLIP_RATIO_LOW=0.20; CLIP_RATIO_HIGH=0.20; LOSS_AGG_MODE=sample-mean; USE_KL_REWARD=True; USE_KL_LOSS=True; DAPO_OVERRIDES=() ;;
+  *) echo "Unsupported RL_VARIANT=${RL_VARIANT}" >&2; exit 2;;
+esac
 
 # ====== 固定超参（各轮一致，由数据飞轮驱动难度递增） ======
-CLIP_RATIO_LOW=0.2
-CLIP_RATIO_HIGH=0.28
 CLIP_RATIO_C=10.0
-KL_COEFF=0.0            # 不使用KL约束，靠非对称clip限制策略更新幅度
+LR="${LR:-${LR_DEFAULT}}"
+KL_COEFF="${KL_COEFF:-0.01}"  # 中心值；需按目标veRL的token归一化语义调参
 ENTROPY_COEFF=0
 TOTAL_EPOCHS=1           # 每轮1 epoch，避免在同质数据上过拟合
 SAVE_FREQ=6
@@ -111,10 +117,10 @@ TEST_FREQ=3
 
 # ====== 打印配置 ======
 echo "============================================================"
-echo "NPC Dialogue Agentic RL Training (${RL_ALGORITHM^^}, no KL)"
+echo "NPC Dialogue Agentic RL Training (${RL_VARIANT^^})"
 echo "============================================================"
 echo "Hardware Profile : ${HW_PROFILE}"
-echo "Algorithm        : ${RL_ALGORITHM}"
+echo "Algorithm        : ${RL_VARIANT}"
 echo "GPUs             : ${N_GPUS}"
 echo "Model            : ${MODEL_PATH}"
 echo "Data             : ${DATA_PATH}"
@@ -122,16 +128,18 @@ echo "Batch Size       : ${TRAIN_BATCH_SIZE}"
 echo "Rollout N        : ${ROLLOUT_N}"
 echo "Max Turns        : ${MAX_TURNS}"
 echo "LR               : ${LR}"
-echo "KL Coeff         : ${KL_COEFF} (disabled, using asymmetric clip)"
+echo "KL Coeff         : ${KL_COEFF}"
 echo "Clip Ratio       : [${CLIP_RATIO_LOW}, ${CLIP_RATIO_HIGH}]"
 echo "Epochs           : ${TOTAL_EPOCHS}"
 echo "Output           : ${OUTPUT_DIR}"
 echo "============================================================"
 
 # ====== 启动训练 ======
-python3 -m verl.trainer.main_ppo \
-    algorithm.adv_estimator=${RL_ALGORITHM} \
-    algorithm.use_kl_in_reward=False \
+python3 "${PROJECT_ROOT}/scripts/verl_entrypoint.py" verl.trainer.main_ppo \
+    algorithm.adv_estimator=${ADV_ESTIMATOR} \
+    algorithm.norm_adv_by_std_in_grpo=${NORM_STD} \
+    algorithm.use_kl_in_reward=${USE_KL_REWARD} \
+    "${DAPO_OVERRIDES[@]}" \
     \
     data.train_files="${DATA_PATH}" \
     data.val_files="${VAL_DATA_PATH}" \
@@ -150,10 +158,11 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.ppo_mini_batch_size=${PPO_MINI_BATCH_SIZE} \
     actor_rollout_ref.actor.ppo_micro_batch_size=${PPO_MICRO_BATCH_SIZE} \
     actor_rollout_ref.actor.use_dynamic_bsz=True \
-    actor_rollout_ref.actor.use_kl_loss=True \
+    actor_rollout_ref.actor.use_kl_loss=${USE_KL_LOSS} \
     actor_rollout_ref.actor.kl_loss_coef=${KL_COEFF} \
     actor_rollout_ref.actor.kl_loss_type=low_var_kl \
     actor_rollout_ref.actor.entropy_coeff=${ENTROPY_COEFF} \
+    actor_rollout_ref.actor.loss_agg_mode=${LOSS_AGG_MODE} \
     actor_rollout_ref.actor.clip_ratio_low=${CLIP_RATIO_LOW} \
     actor_rollout_ref.actor.clip_ratio_high=${CLIP_RATIO_HIGH} \
     actor_rollout_ref.actor.clip_ratio_c=${CLIP_RATIO_C} \
@@ -176,7 +185,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.multi_turn.max_assistant_turns=${MAX_TURNS} \
     actor_rollout_ref.rollout.multi_turn.tool_config_path="${TOOL_CONFIG}" \
     \
-    reward_model.reward_manager=dapo \
+    reward_model.reward_manager=${REWARD_MANAGER} \
     custom_reward_function.path="${PROJECT_ROOT}/rl/npc_reward_function.py" \
     custom_reward_function.name=compute_score_npc_dialogue \
     \
