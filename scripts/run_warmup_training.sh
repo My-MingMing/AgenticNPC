@@ -37,6 +37,7 @@ echo "=========================================="
 
 python -m verl.trainer.main_ppo \
     algorithm.adv_estimator=grpo \
+    algorithm.norm_adv_by_std_in_grpo=True \
     algorithm.use_kl_in_reward=False \
     algorithm.kl_ctrl.kl_coef=0.005 \
     \
@@ -55,7 +56,7 @@ python -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.ppo_mini_batch_size=${PPO_MINI_BATCH_SIZE} \
     actor_rollout_ref.actor.ppo_micro_batch_size=${PPO_MICRO_BATCH_SIZE} \
     actor_rollout_ref.actor.clip_ratio_low=0.2 \
-    actor_rollout_ref.actor.clip_ratio_high=0.28 \
+    actor_rollout_ref.actor.clip_ratio_high=0.20 \
     actor_rollout_ref.actor.clip_ratio_c=10.0 \
     actor_rollout_ref.actor.use_kl_loss=True \
     actor_rollout_ref.actor.kl_loss_coef=0.005 \
@@ -80,7 +81,7 @@ python -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.multi_turn.max_assistant_turns=${MAX_TURNS} \
     actor_rollout_ref.rollout.multi_turn.tool_config_path="${TOOL_CONFIG}" \
     \
-    reward_model.reward_manager=dapo \
+    reward_model.reward_manager=naive \
     custom_reward_function.path="${PROJECT_ROOT}/rl/warmup_reward_function.py" \
     custom_reward_function.name=compute_score_warmup \
     \
