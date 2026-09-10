@@ -11,28 +11,18 @@ from collections import defaultdict
 
 
 def register_ngrpo() -> None:
-    """Register ``ngrpo`` in the active veRL process (idempotent)."""
+    """Register the std-floor and zero-variance-anchor estimators."""
     import torch
     from verl.trainer.ppo import core_algos
 
-    if "ngrpo" in core_algos.ADV_ESTIMATOR_REGISTRY:
-        return
-
-    @core_algos.register_adv_est("ngrpo")
-    def compute_ngrpo_outcome_advantage(
+    def _estimate(
         token_level_rewards: torch.Tensor,
         response_mask: torch.Tensor,
         index,
+        *,
+        zero_std_anchor: float | None,
         epsilon: float = 1e-6,
-        config=None,
-        **kwargs,
     ):
-        """Normalized-GRPO with a reward-unit standard-deviation floor.
-
-        Unlike DAPO, NGRPO keeps per-group standardization and does not filter
-        groups or alter response length rewards.  The 0.05 floor prevents a
-        single noisy judge result from producing an unbounded policy update.
-        """
         scores = token_level_rewards.sum(dim=-1)
         grouped = defaultdict(list)
         for row, group_id in enumerate(index):
@@ -45,10 +35,39 @@ def register_ngrpo() -> None:
                     stds[group_id] = torch.tensor(1.0, device=scores.device, dtype=scores.dtype)
                 else:
                     values_tensor = torch.stack(values)
-                    means[group_id] = values_tensor.mean()
-                    stds[group_id] = values_tensor.std(unbiased=False).clamp_min(0.05)
+                    real_std = values_tensor.std(unbiased=False)
+                    if zero_std_anchor is not None and real_std <= epsilon:
+                        anchor = torch.tensor(
+                            [zero_std_anchor], device=scores.device, dtype=scores.dtype
+                        )
+                        stats_values = torch.cat((values_tensor, anchor))
+                    else:
+                        stats_values = values_tensor
+                    means[group_id] = stats_values.mean()
+                    stds[group_id] = stats_values.std(unbiased=False).clamp_min(0.05)
             for row, group_id in enumerate(index):
                 scores[row] = (scores[row] - means[group_id]) / (stds[group_id] + epsilon)
         advantages = scores.unsqueeze(-1) * response_mask
         return advantages, advantages
 
+    if "ngrpo" not in core_algos.ADV_ESTIMATOR_REGISTRY:
+        @core_algos.register_adv_est("ngrpo")
+        def compute_ngrpo_outcome_advantage(
+            token_level_rewards, response_mask, index, epsilon=1e-6, config=None, **kwargs
+        ):
+            """Project NGRPO: ordinary group normalization with std floor."""
+            return _estimate(
+                token_level_rewards, response_mask, index,
+                zero_std_anchor=None, epsilon=epsilon,
+            )
+
+    if "anchor_grpo" not in core_algos.ADV_ESTIMATOR_REGISTRY:
+        @core_algos.register_adv_est("anchor_grpo")
+        def compute_anchor_grpo_outcome_advantage(
+            token_level_rewards, response_mask, index, epsilon=1e-6, config=None, **kwargs
+        ):
+            """AiCamp-style ablation: add a virtual 1.0 only to zero-std stats."""
+            return _estimate(
+                token_level_rewards, response_mask, index,
+                zero_std_anchor=1.0, epsilon=epsilon,
+            )

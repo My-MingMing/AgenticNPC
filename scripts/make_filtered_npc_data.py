@@ -138,6 +138,12 @@ def main():
                 "exploit_strategy": task_info.get("exploit_strategy", ""),
                 "expected_path": task_info.get("expected_path", []),
                 "hack_path": task_info.get("hack_path", []),
+                "initial_state": task_info.get("actual_player_state", {}),
+                "expected_final_state": task_info.get("expected_final_state", {}),
+                "forbidden_state_changes": task_info.get("forbidden_state_changes", {}),
+                "simulator_version": task_info.get("simulator_version", "sandbox-v1"),
+                "policy_version": sol.get("policy_version", task_info.get("policy_version", "unknown")),
+                "reward_version": sol.get("reward_version", task_info.get("reward_version", "hard-gate-v2")),
                 "requires_tools": bool(task_info.get("expected_path", [])),
                 "tools_kwargs": {
                     "mock_tool": {
@@ -147,6 +153,9 @@ def main():
                             "exploit_strategy": task_info.get("exploit_strategy", ""),
                             "player_goal": task_info.get("player_goal", ""),
                             "actual_player_state": task_info.get("actual_player_state", {}),
+                            "expected_final_state": task_info.get("expected_final_state", {}),
+                            "forbidden_state_changes": task_info.get("forbidden_state_changes", {}),
+                            "simulator_version": task_info.get("simulator_version", "sandbox-v1"),
                             "test_type": sol.get("test_type", "unknown"),
                         }
                     }

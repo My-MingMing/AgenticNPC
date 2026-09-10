@@ -19,7 +19,10 @@ class ModelConfiguration(BaseModel):
     api_base: Optional[str] = Field(default=None, description="可选的 API 地址。")
     api_key: Optional[str] = Field(default=None, description="可选的 API 密钥。")
     temperature: float = Field(default=0.4, description="模型的温度参数。")
-    max_tokens: int = Field(default=8192, description="模型生成的最大 token 数。")
+    max_tokens: int = Field(default=512, description="单次模型生成的最大 token 数。NPC 默认不需要长回复。")
+    enable_thinking: bool = Field(default=False, description="是否启用有限思维模式。")
+    thinking_budget: int = Field(default=256, description="思维模式预算，单位 token。")
+    final_answer_max_tokens: int = Field(default=128, description="玩家可见最终回答的最大 token 数。")
 
     @classmethod
     def from_runnable_config(cls, config: Optional[RunnableConfig] = None) -> "ModelConfiguration":

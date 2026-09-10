@@ -25,6 +25,14 @@ def evaluate_solution(cfg: ModelConfiguration, solved_task: dict, threshold: flo
     solution = solved_task.get("solution", {})
     task_info = solved_task.get("task_info", {})
 
+    # The rubric stage may not have a live Sandbox instance, but it can still
+    # enforce static scenario postconditions when the solve artifact recorded
+    # a final state. Dynamic runtime checks remain authoritative in veRL.
+    task_info = dict(task_info)
+    solution_meta = solution.get("environment", {})
+    if isinstance(solution_meta, dict):
+        task_info.setdefault("final_state", solution_meta.get("runtime_state"))
+
     # 构建轨迹文本
     trajectory = "\n".join([
         f"[{m['role']}]: {m['content'][:500]}"

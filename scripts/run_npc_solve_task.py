@@ -70,10 +70,18 @@ def main():
                 "npc_type": npc_data.get("npc_type", "unknown"),
                 "task": task_info.get("task", ""),
                 "test_type": task_info.get("test_type", "unknown"),
-                "scenario_id": hashlib.sha256(
-                    (npc_data["id"] + "\n" + task_info.get("scenario", task_info.get("task", ""))).encode("utf-8")
-                ).hexdigest()[:16],
+                "scenario_id": hashlib.sha256(json.dumps({
+                    "npc_id": npc_data["id"],
+                    "task": task_info.get("task", ""),
+                    "scenario": task_info.get("scenario", ""),
+                    "initial_state": task_info.get("player_actual_state", {}),
+                    "tool_return_expected": task_info.get("tool_return_expected", {}),
+                    "evaluation": task_info.get("evaluation", ""),
+                    "simulator_version": os.getenv("NPC_SIMULATOR_VERSION", "sandbox-v1"),
+                }, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:16],
                 "repeat_idx": repeat_idx,
+                "policy_version": os.getenv("NPC_POLICY_VERSION", "offline-solver"),
+                "reward_version": os.getenv("NPC_REWARD_VERSION", "hard-gate-v2"),
                 "solution": result,
                 "success": True,
                 "npc_policy": npc_data.get("policy", ""),
@@ -88,6 +96,11 @@ def main():
                     "test_policy": task_info.get("test_policy", ""),
                     "player_goal": task_info.get("player_goal", ""),
                     "actual_player_state": task_info.get("player_actual_state", {}),
+                    "expected_final_state": task_info.get("expected_final_state", {}),
+                    "forbidden_state_changes": task_info.get("forbidden_state_changes", {}),
+                    "simulator_version": os.getenv("NPC_SIMULATOR_VERSION", "sandbox-v1"),
+                    "policy_version": os.getenv("NPC_POLICY_VERSION", "offline-solver"),
+                    "reward_version": os.getenv("NPC_REWARD_VERSION", "hard-gate-v2"),
                 },
             }
         except Exception as e:

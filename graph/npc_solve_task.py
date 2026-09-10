@@ -6,6 +6,7 @@ NPC任务求解 - LangGraph工作流
 import os
 import json
 import sys
+import copy
 from typing import TypedDict, List, Dict, Any, Optional
 
 from langgraph.graph import StateGraph, END
@@ -13,6 +14,7 @@ from langchain_core.runnables import RunnableConfig
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from configuration import ModelConfiguration
+from rl.tool_policy import WRITE_TOOLS
 
 
 class SolveTaskState(TypedDict):
@@ -27,7 +29,14 @@ class SolveTaskState(TypedDict):
     action_data: Optional[dict]   # 当前动作数据（工具调用参数或问题内容）
 
 
-_STEP_CONFIG_KEYS = ("model_name", "temperature", "max_tokens")
+_STEP_CONFIG_KEYS = (
+    "model_name",
+    "temperature",
+    "max_tokens",
+    "enable_thinking",
+    "thinking_budget",
+    "final_answer_max_tokens",
+)
 
 
 def create_step_config(base_config: RunnableConfig, step_name: str) -> RunnableConfig:
@@ -181,6 +190,18 @@ builder.add_edge("mock_user", "reason_and_act")
 solve_graph = builder.compile()
 
 
+def needs_limited_thinking(task_info: dict) -> bool:
+    """Deterministically route only complex/high-risk tasks to thinking."""
+    if task_info.get("force_thinking") is not None:
+        return bool(task_info["force_thinking"])
+    if task_info.get("test_type") in ("adversarial", "exploit", "combo"):
+        return True
+    oracle = task_info.get("tool_return_expected", {})
+    path = oracle.get("normal_path", []) if isinstance(oracle, dict) else []
+    tool_names = {step.get("tool_name") for step in path if isinstance(step, dict)}
+    return len(path) >= 5 or bool(tool_names & WRITE_TOOLS and len(path) >= 4)
+
+
 def run_solve_task(task_info: dict, npc_policy: str, tools: list, config: dict, max_turns: int = 10) -> dict:
     """
     对单个任务运行Agent求解。
@@ -217,7 +238,15 @@ def run_solve_task(task_info: dict, npc_policy: str, tools: list, config: dict, 
         "action_data": None,
     }
 
-    runnable_config = {"configurable": config, "recursion_limit": 50}
+    runtime_config = copy.deepcopy(config)
+    router_cfg = runtime_config.get("thinking_router", {})
+    thinking_enabled = bool(router_cfg.get("enabled", True)) and needs_limited_thinking(task_info)
+    solve_cfg = runtime_config.setdefault("step_models", {}).setdefault("SolveAgent", {})
+    solve_cfg["enable_thinking"] = thinking_enabled
+    solve_cfg["thinking_budget"] = min(int(router_cfg.get("budget_tokens", 256)), 512)
+    solve_cfg["final_answer_max_tokens"] = int(router_cfg.get("final_answer_max_tokens", 128))
+
+    runnable_config = {"configurable": runtime_config, "recursion_limit": 50}
     final_state = solve_graph.invoke(initial_state, config=runnable_config)
 
     return {
@@ -226,4 +255,10 @@ def run_solve_task(task_info: dict, npc_policy: str, tools: list, config: dict, 
         "solve_history": final_state["solve_history"],
         "turn_count": final_state["turn_count"],
         "terminated": final_state["terminated"],
+        "generation_policy": {
+            "thinking_enabled": thinking_enabled,
+            "thinking_budget": solve_cfg["thinking_budget"] if thinking_enabled else 0,
+            "final_answer_max_tokens": solve_cfg["final_answer_max_tokens"],
+            "single_step_max_tokens": solve_cfg.get("max_tokens", 512),
+        },
     }

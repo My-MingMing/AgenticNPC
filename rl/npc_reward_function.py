@@ -23,6 +23,46 @@ from rl.tool_policy import (
 from rl.algorithm_variants import overlong_reward_shaping
 
 
+def _flatten_mapping(value: Any, prefix: str = "") -> Dict[str, Any]:
+    """Flatten nested state for deterministic postcondition comparisons."""
+    if not isinstance(value, dict):
+        return {prefix: value} if prefix else {}
+    result: Dict[str, Any] = {}
+    for key, child in value.items():
+        path = f"{prefix}.{key}" if prefix else str(key)
+        if isinstance(child, dict):
+            result.update(_flatten_mapping(child, path))
+        else:
+            result[path] = child
+    return result
+
+
+def _check_state_postconditions(extra_info: Dict[str, Any]) -> list[str]:
+    """Check final runtime state when the Sandbox supplies it.
+
+    Older offline fixtures do not contain final_state and remain compatible.
+    Expected values are exact flattened values; ``forbidden_state_changes``
+    compares initial and final state to prevent collateral writes.
+    """
+    final_state = extra_info.get("final_state", extra_info.get("runtime_state"))
+    expected = extra_info.get("expected_final_state")
+    if not isinstance(final_state, dict):
+        return []
+    violations: list[str] = []
+    final_flat = _flatten_mapping(final_state)
+    if isinstance(expected, dict):
+        for key, value in _flatten_mapping(expected).items():
+            if final_flat.get(key) != value:
+                violations.append(f"postcondition_mismatch:{key}")
+    initial_flat = _flatten_mapping(extra_info.get("initial_state", {}))
+    forbidden = extra_info.get("forbidden_state_changes", {})
+    if isinstance(forbidden, dict):
+        for key in _flatten_mapping(forbidden):
+            if initial_flat.get(key) != final_flat.get(key):
+                violations.append(f"forbidden_state_change:{key}")
+    return violations
+
+
 def _hard_gate(solution_str: str, extra_info: Dict[str, Any]) -> Tuple[bool, list[str]]:
     calls = extract_tool_calls(solution_str)
     expected_path = extra_info.get("expected_path", [])
@@ -55,6 +95,19 @@ def _hard_gate(solution_str: str, extra_info: Dict[str, Any]) -> Tuple[bool, lis
     state_invariants = extra_info.get("state_invariants")
     if isinstance(state_invariants, dict) and state_invariants.get("violations"):
         violations.append("state_invariant_violation")
+
+    # Formal RL must use a deterministic, replayable environment. Exploratory
+    # LLM fallback trajectories are retained for diagnosis but cannot become
+    # positive policy updates unless explicitly opted in for an experiment.
+    environment_source = extra_info.get("environment_source")
+    if environment_source == "oracle_miss":
+        violations.append("environment_oracle_miss")
+    if environment_source == "llm_fallback" and not extra_info.get(
+        "allow_nondeterministic_environment", False
+    ):
+        violations.append("nondeterministic_environment")
+
+    violations.extend(_check_state_postconditions(extra_info))
 
     return not violations, violations
 

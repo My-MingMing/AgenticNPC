@@ -6,7 +6,10 @@ step_models:
   SolveAgent:
     model_name: "Qwen3-235B"
     temperature: 0.7
-    max_tokens: 4096
+    max_tokens: 512
+    enable_thinking: false
+    thinking_budget: 256
+    final_answer_max_tokens: 128
   MockToolAgent:
     model_name: "Qwen3-235B"
     temperature: 0.2
@@ -26,3 +29,8 @@ api_configs:
 
 max_workers: 2
 max_turns: 10
+
+thinking_router:
+  enabled: true
+  budget_tokens: 256
+  final_answer_max_tokens: 128

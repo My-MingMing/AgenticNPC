@@ -50,6 +50,11 @@ class GameMockSandboxTool:
             "interaction_history": [],
             "event_log": [],
             "runtime_state": copy.deepcopy(create_kwargs.get("actual_player_state", {})),
+            "expected_final_state": copy.deepcopy(create_kwargs.get("expected_final_state", {})),
+            "forbidden_state_changes": copy.deepcopy(create_kwargs.get("forbidden_state_changes", {})),
+            "state_deltas": [],
+            "environment_source": "scenario_oracle",
+            "simulator_version": os.getenv("NPC_SIMULATOR_VERSION", "sandbox-v1"),
         }
 
     async def execute(self, tool_name: str, tool_input: str, instance_state: Dict[str, Any],
@@ -143,6 +148,7 @@ class GameMockSandboxTool:
         if not isinstance(output, dict):
             return
         runtime = state.setdefault("runtime_state", {})
+        before = copy.deepcopy(runtime)
         if tool_name == "execute_transaction" and output.get("success"):
             if "new_gold_balance" in output:
                 runtime["gold_balance"] = output["new_gold_balance"]
@@ -154,11 +160,21 @@ class GameMockSandboxTool:
                 runtime.setdefault("relationships", {})[
                     tool_input.get("target_id", "unknown")
                 ] = new_value
+        after = copy.deepcopy(runtime)
+        delta = {key: value for key, value in after.items() if before.get(key) != value}
+        delta_before_after = {
+            key: {"before": before.get(key), "after": value}
+            for key, value in after.items()
+            if before.get(key) != value
+        }
+        state.setdefault("state_deltas", []).append(delta)
         state.setdefault("event_log", []).append({
             "tool_name": tool_name,
             "arguments": tool_input,
             "output": copy.deepcopy(output),
             "source": source,
+            "state_delta": delta,
+            "state_delta_before_after": delta_before_after,
         })
 
     async def _mock_game_tool(self, tool_name: str, tool_input: Dict[str, Any],
@@ -174,6 +190,20 @@ class GameMockSandboxTool:
             # Keep provenance internal. The actor sees the same tool schema in
             # training and serving instead of a training-only {source, data} wrapper.
             return json.dumps(deterministic, ensure_ascii=False)
+
+        # Formal RL must be deterministic and replayable. An LLM fallback is
+        # useful only for exploratory data generation and must be explicitly
+        # opted in, never silently mixed into the training environment.
+        allow_fallback = os.getenv("NPC_ALLOW_LLM_TOOL_FALLBACK", "false").lower() == "true"
+        if not allow_fallback:
+            state["environment_source"] = "oracle_miss"
+            error = {"ok": False, "error_code": "TOOL_NOT_IMPLEMENTED",
+                     "retryable": False, "tool_name": tool_name}
+            state.setdefault("event_log", []).append({
+                "tool_name": tool_name, "arguments": tool_input,
+                "output": error, "source": "oracle_miss", "state_delta": {},
+            })
+            return json.dumps(error, ensure_ascii=False)
 
         prompt = GAME_TOOL_SIMULATION_PROMPT_FOR_RL.format(
             world_state=json.dumps(state["tool_return_expected"], ensure_ascii=False, indent=2),
@@ -201,6 +231,7 @@ class GameMockSandboxTool:
                 parsed_result = json.loads(result)
             except json.JSONDecodeError:
                 parsed_result = {"message": result}
+            state["environment_source"] = "llm_fallback"
             self._apply_state_delta(
                 tool_name, tool_input, parsed_result, state, source="llm_fallback"
             )
@@ -248,11 +279,20 @@ class GameMockSandboxTool:
         use_judge = os.getenv("NPC_USE_LLM_JUDGE", "false").lower() == "true"
         client = AsyncOpenAI(base_url=judge_base, api_key=judge_key) if use_judge and judge_base else None
 
+        # Pass the authoritative environment state into the reward function;
+        # text-only Judge output must never stand in for postcondition checks.
+        instance_state = kwargs.get("instance_state") or kwargs.get("state")
+        reward_info = dict(extra_info or {})
+        if isinstance(instance_state, dict):
+            reward_info.setdefault("final_state", copy.deepcopy(instance_state.get("runtime_state", {})))
+            reward_info.setdefault("initial_state", copy.deepcopy(instance_state.get("actual_player_state", {})))
+            reward_info.setdefault("state_deltas", copy.deepcopy(instance_state.get("state_deltas", [])))
+            reward_info.setdefault("environment_source", instance_state.get("environment_source", "unknown"))
         score = await compute_score_npc_dialogue(
             data_source="npc_dialogue",
             solution_str=solution_str,
             ground_truth=ground_truth,
-            extra_info=extra_info,
+            extra_info=reward_info,
             llm_client=client,
         )
         return score

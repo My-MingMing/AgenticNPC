@@ -21,7 +21,9 @@ def main() -> None:
     module = sys.argv[1]
     if module not in {"verl.trainer.main_ppo", "recipe.one_step_off_policy.main_ppo"}:
         raise SystemExit(f"unsupported veRL entrypoint: {module}")
-    if __import__("os").environ.get("RL_VARIANT", "grpo").lower() == "ngrpo":
+    if __import__("os").environ.get("RL_VARIANT", "grpo").lower() in {
+        "ngrpo", "anchor_grpo"
+    }:
         from rl.verl_patches.ngrpo_core_algos import register_ngrpo
 
         register_ngrpo()

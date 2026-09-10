@@ -16,18 +16,21 @@
 # 环境变量覆盖:
 #   MODEL_PATH=./checkpoints/round1/merge bash run_npc_training.sh
 #   DATA_PATH=./data/round2_train.parquet bash run_npc_training.sh
+#   NPC_ABLATION=clip_high NPC_CONFIG_ONLY=1 bash run_npc_training.sh h200
 # ============================================================================
 
 set -ex
-ulimit -n 65535
+ulimit -n 65535 || true
 
 # ====== 路径配置 ======
 export PROJECT_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 export DATA_PATH="${DATA_PATH:-${PROJECT_ROOT}/data/train.parquet}"
 export VAL_DATA_PATH="${VAL_DATA_PATH:-${PROJECT_ROOT}/data/val.parquet}"
 export MODEL_PATH="${MODEL_PATH:-Qwen/Qwen3-8B}"
+OUTPUT_DIR_WAS_SET="${OUTPUT_DIR+x}"
 export OUTPUT_DIR="${OUTPUT_DIR:-${PROJECT_ROOT}/checkpoints}"
 export TOOL_CONFIG="${PROJECT_ROOT}/rl/tool_config.yaml"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
 
 # ====== 根据参数选择硬件Profile ======
 HW_PROFILE="${1:-h200}"
@@ -41,8 +44,8 @@ case "${HW_PROFILE}" in
     PPO_MICRO_BATCH_SIZE=4
     ROLLOUT_N=8
     MAX_PROMPT_LENGTH=3072
-    MAX_RESPONSE_LENGTH=4096
-    MAX_TURNS=10
+    MAX_RESPONSE_LENGTH=2048
+    MAX_TURNS=8
     LR_DEFAULT=5e-7
     GPU_MEMORY_UTIL=0.85
     PARAM_OFFLOAD=True
@@ -61,7 +64,7 @@ case "${HW_PROFILE}" in
     PPO_MICRO_BATCH_SIZE=2
     ROLLOUT_N=4
     MAX_PROMPT_LENGTH=2048
-    MAX_RESPONSE_LENGTH=2048
+    MAX_RESPONSE_LENGTH=1536
     MAX_TURNS=8
     LR_DEFAULT=5e-7
     GPU_MEMORY_UTIL=0.92
@@ -81,8 +84,8 @@ case "${HW_PROFILE}" in
     PPO_MICRO_BATCH_SIZE=8
     ROLLOUT_N=16
     MAX_PROMPT_LENGTH=4096
-    MAX_RESPONSE_LENGTH=10000
-    MAX_TURNS=15
+    MAX_RESPONSE_LENGTH=2048
+    MAX_TURNS=8
     LR_DEFAULT=5e-7
     GPU_MEMORY_UTIL=0.90
     PARAM_OFFLOAD=False
@@ -93,18 +96,25 @@ case "${HW_PROFILE}" in
     EXPERIMENT_NAME="qwen3_8b_npc_8xH200"
     ;;
 esac
+ROLLOUT_N="${NPC_ROLLOUT_N:-${ROLLOUT_N}}"
 
 # ====== 算法选择 ======
 # 本入口只承诺GRPO。GSPO需要序列级ratio/clip实现，不能只替换adv_estimator。
 RL_VARIANT="${RL_VARIANT:-${RL_ALGORITHM:-grpo}}"
+NPC_ABLATION="${NPC_ABLATION:-baseline}"
 export RL_VARIANT
-python3 "${PROJECT_ROOT}/scripts/validate_rl_variant.py" "${RL_VARIANT}" --max-response-length "${MAX_RESPONSE_LENGTH}"
-case "${RL_VARIANT,,}" in
-  grpo) ADV_ESTIMATOR=grpo; REWARD_MANAGER=naive; NORM_STD=True; CLIP_RATIO_LOW=0.20; CLIP_RATIO_HIGH=0.20; LOSS_AGG_MODE=sample-mean; USE_KL_REWARD=True; USE_KL_LOSS=True; DAPO_OVERRIDES=() ;;
-  dapo) ADV_ESTIMATOR=grpo; REWARD_MANAGER=dapo; NORM_STD=False; CLIP_RATIO_LOW=0.20; CLIP_RATIO_HIGH=0.28; LOSS_AGG_MODE=token-mean; USE_KL_REWARD=False; USE_KL_LOSS=False; DAPO_OVERRIDES=(algorithm.filter_groups.enable=True algorithm.filter_groups.metric=seq_final_reward algorithm.filter_groups.max_num_gen_batches=4 reward_model.reward_kwargs.max_resp_len=${MAX_RESPONSE_LENGTH} reward_model.reward_kwargs.overlong_buffer_cfg.enable=True reward_model.reward_kwargs.overlong_buffer_cfg.len=512 reward_model.reward_kwargs.overlong_buffer_cfg.penalty_factor=1.0) ;;
-  ngrpo) ADV_ESTIMATOR=ngrpo; REWARD_MANAGER=naive; NORM_STD=True; CLIP_RATIO_LOW=0.20; CLIP_RATIO_HIGH=0.20; LOSS_AGG_MODE=sample-mean; USE_KL_REWARD=True; USE_KL_LOSS=True; DAPO_OVERRIDES=() ;;
-  *) echo "Unsupported RL_VARIANT=${RL_VARIANT}" >&2; exit 2;;
-esac
+export NPC_ABLATION
+if [ -z "${OUTPUT_DIR_WAS_SET}" ]; then
+  export OUTPUT_DIR="${OUTPUT_DIR}/${RL_VARIANT}_${NPC_ABLATION}"
+fi
+EXPERIMENT_NAME="${EXPERIMENT_NAME}_${RL_VARIANT}_${NPC_ABLATION}"
+"${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/validate_rl_variant.py" "${RL_VARIANT}" \
+  --ablation "${NPC_ABLATION}" --max-response-length "${MAX_RESPONSE_LENGTH}"
+mapfile -t EFFECTIVE_ALGO_OVERRIDES < <(
+  "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/validate_rl_variant.py" "${RL_VARIANT}" \
+    --ablation "${NPC_ABLATION}" --max-response-length "${MAX_RESPONSE_LENGTH}" \
+    --print-effective-overrides
+)
 
 # ====== 固定超参（各轮一致，由数据飞轮驱动难度递增） ======
 CLIP_RATIO_C=10.0
@@ -121,6 +131,7 @@ echo "NPC Dialogue Agentic RL Training (${RL_VARIANT^^})"
 echo "============================================================"
 echo "Hardware Profile : ${HW_PROFILE}"
 echo "Algorithm        : ${RL_VARIANT}"
+echo "Ablation         : ${NPC_ABLATION}"
 echo "GPUs             : ${N_GPUS}"
 echo "Model            : ${MODEL_PATH}"
 echo "Data             : ${DATA_PATH}"
@@ -129,17 +140,18 @@ echo "Rollout N        : ${ROLLOUT_N}"
 echo "Max Turns        : ${MAX_TURNS}"
 echo "LR               : ${LR}"
 echo "KL Coeff         : ${KL_COEFF}"
-echo "Clip Ratio       : [${CLIP_RATIO_LOW}, ${CLIP_RATIO_HIGH}]"
+echo "Config contract  : printed by validate_rl_variant.py above"
 echo "Epochs           : ${TOTAL_EPOCHS}"
 echo "Output           : ${OUTPUT_DIR}"
 echo "============================================================"
+if [ "${NPC_CONFIG_ONLY:-0}" = "1" ]; then
+    echo "Config-only preflight complete; training was not started."
+    exit 0
+fi
 
 # ====== 启动训练 ======
-python3 "${PROJECT_ROOT}/scripts/verl_entrypoint.py" verl.trainer.main_ppo \
-    algorithm.adv_estimator=${ADV_ESTIMATOR} \
-    algorithm.norm_adv_by_std_in_grpo=${NORM_STD} \
-    algorithm.use_kl_in_reward=${USE_KL_REWARD} \
-    "${DAPO_OVERRIDES[@]}" \
+"${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/verl_entrypoint.py" verl.trainer.main_ppo \
+    "${EFFECTIVE_ALGO_OVERRIDES[@]}" \
     \
     data.train_files="${DATA_PATH}" \
     data.val_files="${VAL_DATA_PATH}" \
@@ -158,13 +170,9 @@ python3 "${PROJECT_ROOT}/scripts/verl_entrypoint.py" verl.trainer.main_ppo \
     actor_rollout_ref.actor.ppo_mini_batch_size=${PPO_MINI_BATCH_SIZE} \
     actor_rollout_ref.actor.ppo_micro_batch_size=${PPO_MICRO_BATCH_SIZE} \
     actor_rollout_ref.actor.use_dynamic_bsz=True \
-    actor_rollout_ref.actor.use_kl_loss=${USE_KL_LOSS} \
     actor_rollout_ref.actor.kl_loss_coef=${KL_COEFF} \
     actor_rollout_ref.actor.kl_loss_type=low_var_kl \
     actor_rollout_ref.actor.entropy_coeff=${ENTROPY_COEFF} \
-    actor_rollout_ref.actor.loss_agg_mode=${LOSS_AGG_MODE} \
-    actor_rollout_ref.actor.clip_ratio_low=${CLIP_RATIO_LOW} \
-    actor_rollout_ref.actor.clip_ratio_high=${CLIP_RATIO_HIGH} \
     actor_rollout_ref.actor.clip_ratio_c=${CLIP_RATIO_C} \
     actor_rollout_ref.actor.fsdp_config.param_offload=${PARAM_OFFLOAD} \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=${OPTIMIZER_OFFLOAD} \
@@ -180,12 +188,11 @@ python3 "${PROJECT_ROOT}/scripts/verl_entrypoint.py" verl.trainer.main_ppo \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=${LOG_PROB_MICRO_BS} \
     actor_rollout_ref.rollout.multi_turn.enable=True \
     actor_rollout_ref.rollout.multi_turn.format=my_custom_hermes \
-    actor_rollout_ref.rollout.multi_turn.max_tool_response_length=4096 \
+    actor_rollout_ref.rollout.multi_turn.max_tool_response_length=1024 \
     actor_rollout_ref.rollout.multi_turn.max_user_turns=${MAX_TURNS} \
     actor_rollout_ref.rollout.multi_turn.max_assistant_turns=${MAX_TURNS} \
     actor_rollout_ref.rollout.multi_turn.tool_config_path="${TOOL_CONFIG}" \
     \
-    reward_model.reward_manager=${REWARD_MANAGER} \
     custom_reward_function.path="${PROJECT_ROOT}/rl/npc_reward_function.py" \
     custom_reward_function.name=compute_score_npc_dialogue \
     \
@@ -210,7 +217,7 @@ if [ -z "$LATEST_STEP" ]; then
     echo "Warning: Could not find latest_checkpointed_iteration.txt, skipping merge"
 else
     echo "Merging checkpoint from global_step_${LATEST_STEP}"
-    python3 -m verl.model_merger merge \
+    "${PYTHON_BIN}" -m verl.model_merger merge \
         --backend fsdp \
         --local_dir ${OUTPUT_DIR}/global_step_${LATEST_STEP}/actor \
         --target_dir ${OUTPUT_DIR}/merge

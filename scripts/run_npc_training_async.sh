@@ -32,15 +32,17 @@
 # ============================================================================
 
 set -ex
-ulimit -n 65535
+ulimit -n 65535 || true
 
 # ====== 路径配置 ======
 export PROJECT_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 export DATA_PATH="${DATA_PATH:-${PROJECT_ROOT}/data/train.parquet}"
 export VAL_DATA_PATH="${VAL_DATA_PATH:-${PROJECT_ROOT}/data/val.parquet}"
 export MODEL_PATH="${MODEL_PATH:-Qwen/Qwen3-8B}"
+OUTPUT_DIR_WAS_SET="${OUTPUT_DIR+x}"
 export OUTPUT_DIR="${OUTPUT_DIR:-${PROJECT_ROOT}/checkpoints}"
 export TOOL_CONFIG="${PROJECT_ROOT}/rl/tool_config.yaml"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
 
 # ====== GPU 拆分(核心)======
 # 单机 8xH200。约定: n_gpus_rollout = Rollout(生成)池, 其余为 Train(训练)池。
@@ -64,7 +66,7 @@ N_GPUS_TRAINING=$((NGPUS_PER_NODE - N_GPUS_ROLLOUT))   # = 3
 # 注意:gen_tp 必须能整除 N_GPUS_ROLLOUT。5 只能被 1 或 5 整除,故 TP=1。
 GEN_TP=${GEN_TP:-1}
 # 训练池 3 卡:8B 的 FSDP2 全态(参数+梯度+Adam)约 128GB,分片到 3 卡每卡 ~43GB,H200 放得下,
-# 因此可不做 offload。长序列(4K+10K=14K)靠 dynamic_bsz + gradient_checkpointing 扛。
+# 因此可不做 offload。当前短 NPC 轨迹采用 4K prompt + 2K response。
 FSDP_SIZE=${FSDP_SIZE:-3}
 SP_SIZE=${SP_SIZE:-1}      # Ulysses 序列并行;3 卡下先关(=1),显存/OOM 再考虑开
 
@@ -73,25 +75,32 @@ TRAIN_BATCH_SIZE=64
 PPO_MINI_BATCH_SIZE=16
 ROLLOUT_N=16
 MAX_PROMPT_LENGTH=4096
-MAX_RESPONSE_LENGTH=10000
-MAX_TURNS=15
+MAX_RESPONSE_LENGTH=2048
+MAX_TURNS=8
 LR="${LR:-5e-7}"
 GPU_MEMORY_UTIL=0.90
 GRADIENT_CHECKPOINTING=True
 LOG_PROB_MICRO_BS=16
 EXPERIMENT_NAME="qwen3_8b_npc_8xH200_async_${N_GPUS_ROLLOUT}_${N_GPUS_TRAINING}"
+ROLLOUT_N="${NPC_ROLLOUT_N:-${ROLLOUT_N}}"
 
 # ====== 算法选择 ======
 # 只支持GRPO。异步陈旧性通过版本上限、importance ratio监控和丢弃策略控制。
 RL_VARIANT="${RL_VARIANT:-${RL_ALGORITHM:-grpo}}"
+NPC_ABLATION="${NPC_ABLATION:-baseline}"
 export RL_VARIANT
-python3 "${PROJECT_ROOT}/scripts/validate_rl_variant.py" "${RL_VARIANT}" --max-response-length "${MAX_RESPONSE_LENGTH}"
-case "${RL_VARIANT,,}" in
-  grpo) ADV_ESTIMATOR=grpo; REWARD_MANAGER=naive; NORM_STD=True; CLIP_RATIO_LOW=0.20; CLIP_RATIO_HIGH=0.20; LOSS_AGG_MODE=sample-mean; USE_KL_REWARD=True; USE_KL_LOSS=True; DAPO_OVERRIDES=() ;;
-  dapo) ADV_ESTIMATOR=grpo; REWARD_MANAGER=dapo; NORM_STD=False; CLIP_RATIO_LOW=0.20; CLIP_RATIO_HIGH=0.28; LOSS_AGG_MODE=token-mean; USE_KL_REWARD=False; USE_KL_LOSS=False; DAPO_OVERRIDES=(algorithm.filter_groups.enable=True algorithm.filter_groups.metric=seq_final_reward algorithm.filter_groups.max_num_gen_batches=4 reward_model.reward_kwargs.max_resp_len=${MAX_RESPONSE_LENGTH} reward_model.reward_kwargs.overlong_buffer_cfg.enable=True reward_model.reward_kwargs.overlong_buffer_cfg.len=512 reward_model.reward_kwargs.overlong_buffer_cfg.penalty_factor=1.0) ;;
-  ngrpo) ADV_ESTIMATOR=ngrpo; REWARD_MANAGER=naive; NORM_STD=True; CLIP_RATIO_LOW=0.20; CLIP_RATIO_HIGH=0.20; LOSS_AGG_MODE=sample-mean; USE_KL_REWARD=True; USE_KL_LOSS=True; DAPO_OVERRIDES=() ;;
-  *) echo "Unsupported RL_VARIANT=${RL_VARIANT}" >&2; exit 2;;
-esac
+export NPC_ABLATION
+if [ -z "${OUTPUT_DIR_WAS_SET}" ]; then
+  export OUTPUT_DIR="${OUTPUT_DIR}/${RL_VARIANT}_${NPC_ABLATION}_async"
+fi
+EXPERIMENT_NAME="${EXPERIMENT_NAME}_${RL_VARIANT}_${NPC_ABLATION}"
+"${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/validate_rl_variant.py" "${RL_VARIANT}" \
+  --ablation "${NPC_ABLATION}" --max-response-length "${MAX_RESPONSE_LENGTH}"
+mapfile -t EFFECTIVE_ALGO_OVERRIDES < <(
+  "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/validate_rl_variant.py" "${RL_VARIANT}" \
+    --ablation "${NPC_ABLATION}" --max-response-length "${MAX_RESPONSE_LENGTH}" \
+    --print-effective-overrides
+)
 
 # ====== 固定超参(与同步版一致,便于对照)======
 CLIP_RATIO_C=10.0
@@ -107,26 +116,29 @@ echo "NPC Dialogue Agentic RL — FULLY ASYNC (one-step-off-policy)"
 echo "============================================================"
 echo "verl required    : 0.7.0  (recipe.one_step_off_policy.main_ppo)"
 echo "Algorithm        : ${RL_VARIANT}"
+echo "Ablation         : ${NPC_ABLATION}"
 echo "GPU split        : Rollout=${N_GPUS_ROLLOUT}  Train=${N_GPUS_TRAINING}  (hybrid_engine=False)"
 echo "Gen TP           : ${GEN_TP}   FSDP size: ${FSDP_SIZE}   SP: ${SP_SIZE}"
 echo "Model            : ${MODEL_PATH}"
 echo "Data             : ${DATA_PATH}"
 echo "Batch / RolloutN : ${TRAIN_BATCH_SIZE} / ${ROLLOUT_N}"
 echo "Max Turns        : ${MAX_TURNS}"
-echo "Clip Ratio       : [${CLIP_RATIO_LOW}, ${CLIP_RATIO_HIGH}]  KL=${KL_COEFF}"
+echo "KL coefficient   : ${KL_COEFF} (inactive for kl_off/DAPO)"
+echo "Config contract  : printed by validate_rl_variant.py above"
 echo "Output           : ${OUTPUT_DIR}"
 echo "============================================================"
+if [ "${NPC_CONFIG_ONLY:-0}" = "1" ]; then
+    echo "Config-only preflight complete; training was not started."
+    exit 0
+fi
 
 # ====== 启动训练 ======
 # 关键差异 vs 同步版:
 #   actor_rollout_ref.hybrid_engine=False   → 训推解耦(全异步的开关)
 #   trainer.n_gpus_per_node = 训练池        + rollout.nnodes / rollout.n_gpus_per_node = 生成池
 #   actor.strategy=fsdp2 / critic.strategy=fsdp2  (one_step_off_policy 要求 fsdp2)
-python3 "${PROJECT_ROOT}/scripts/verl_entrypoint.py" recipe.one_step_off_policy.main_ppo \
-    algorithm.adv_estimator=${ADV_ESTIMATOR} \
-    algorithm.norm_adv_by_std_in_grpo=${NORM_STD} \
-    algorithm.use_kl_in_reward=${USE_KL_REWARD} \
-    "${DAPO_OVERRIDES[@]}" \
+"${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/verl_entrypoint.py" recipe.one_step_off_policy.main_ppo \
+    "${EFFECTIVE_ALGO_OVERRIDES[@]}" \
     \
     data.train_files="${DATA_PATH}" \
     data.val_files="${VAL_DATA_PATH}" \
@@ -147,15 +159,11 @@ python3 "${PROJECT_ROOT}/scripts/verl_entrypoint.py" recipe.one_step_off_policy.
     actor_rollout_ref.actor.optim.lr=${LR} \
     actor_rollout_ref.actor.ppo_mini_batch_size=${PPO_MINI_BATCH_SIZE} \
     actor_rollout_ref.actor.use_dynamic_bsz=True \
-    actor_rollout_ref.actor.use_kl_loss=${USE_KL_LOSS} \
     actor_rollout_ref.actor.kl_loss_coef=${KL_COEFF} \
     actor_rollout_ref.actor.kl_loss_type=low_var_kl \
     actor_rollout_ref.actor.entropy_coeff=${ENTROPY_COEFF} \
-    actor_rollout_ref.actor.clip_ratio_low=${CLIP_RATIO_LOW} \
-    actor_rollout_ref.actor.clip_ratio_high=${CLIP_RATIO_HIGH} \
     actor_rollout_ref.actor.clip_ratio_c=${CLIP_RATIO_C} \
     actor_rollout_ref.actor.grad_clip=1.0 \
-    actor_rollout_ref.actor.loss_agg_mode=${LOSS_AGG_MODE} \
     actor_rollout_ref.actor.ulysses_sequence_parallel_size=${SP_SIZE} \
     actor_rollout_ref.actor.fsdp_config.param_offload=False \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=False \
@@ -175,12 +183,11 @@ python3 "${PROJECT_ROOT}/scripts/verl_entrypoint.py" recipe.one_step_off_policy.
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=${LOG_PROB_MICRO_BS} \
     actor_rollout_ref.rollout.multi_turn.enable=True \
     actor_rollout_ref.rollout.multi_turn.format=my_custom_hermes \
-    actor_rollout_ref.rollout.multi_turn.max_tool_response_length=4096 \
+    actor_rollout_ref.rollout.multi_turn.max_tool_response_length=1024 \
     actor_rollout_ref.rollout.multi_turn.max_user_turns=${MAX_TURNS} \
     actor_rollout_ref.rollout.multi_turn.max_assistant_turns=${MAX_TURNS} \
     actor_rollout_ref.rollout.multi_turn.tool_config_path="${TOOL_CONFIG}" \
     \
-    reward_model.reward_manager=${REWARD_MANAGER} \
     custom_reward_function.path="${PROJECT_ROOT}/rl/npc_reward_function.py" \
     custom_reward_function.name=compute_score_npc_dialogue \
     \
@@ -207,7 +214,7 @@ if [ -z "$LATEST_STEP" ]; then
     echo "Warning: Could not find latest_checkpointed_iteration.txt, skipping merge"
 else
     echo "Merging checkpoint from global_step_${LATEST_STEP}"
-    python3 -m verl.model_merger merge \
+    "${PYTHON_BIN}" -m verl.model_merger merge \
         --backend fsdp \
         --local_dir ${OUTPUT_DIR}/global_step_${LATEST_STEP}/actor \
         --target_dir ${OUTPUT_DIR}/merge

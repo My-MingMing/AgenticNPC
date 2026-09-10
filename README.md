@@ -359,8 +359,9 @@ bash scripts/run_npc_training.sh
 # 指定其他硬件:
 # bash scripts/run_npc_training.sh a100    # 4x A100 80GB
 # bash scripts/run_npc_training.sh 4090    # 8x RTX 4090 24GB
+```
 
-# 训练入口支持 `RL_VARIANT=grpo|dapo|ngrpo`；NGRPO 需要先安装项目的 veRL estimator patch。
+训练入口支持 `RL_VARIANT=grpo|dapo|ngrpo|anchor_grpo`；后两个变体需要先安装项目的 veRL estimator patch。
 
 ```bash
 # GRPO baseline（默认）
@@ -369,11 +370,30 @@ bash scripts/run_npc_training.sh
 RL_VARIANT=dapo bash scripts/run_npc_training.sh a100
 # NGRPO 对照（仅在已应用 patch 的 veRL 环境）
 NGRPO_PATCHED_VERL=1 RL_VARIANT=ngrpo bash scripts/run_npc_training.sh
+# AiCamp 虚拟满分锚点对照（与 std-floor NGRPO 不是同一机制）
+NGRPO_PATCHED_VERL=1 RL_VARIANT=anchor_grpo bash scripts/run_npc_training.sh
 ```
+
+#### GRPO 单因素消融（推荐先做）
+
+`RL_VARIANT` 用于比较整套算法，`NPC_ABLATION` 只在 stock GRPO 上改变一个机制。
+先用 `NPC_CONFIG_ONLY=1` 打印最终 Hydra 合约，不会启动训练：
+
+```bash
+NPC_ABLATION=baseline NPC_CONFIG_ONLY=1 bash scripts/run_npc_training.sh h200
+NPC_ABLATION=clip_high NPC_CONFIG_ONLY=1 bash scripts/run_npc_training.sh h200
+NPC_ABLATION=dynamic_sampling NPC_CONFIG_ONLY=1 bash scripts/run_npc_training.sh h200
+```
+
+可选值为 `baseline`、`clip_high`、`token_mean`、`kl_off`、
+`dynamic_sampling`、`overlong_shaping`。还可用 `NPC_ROLLOUT_N=8|16`
+单独比较 group size。非 baseline 消融只能与 `RL_VARIANT=grpo` 组合；脚本会拒绝
+`dapo + clip_high` 这类多变量叠加。默认 checkpoint 目录按
+`{variant}_{ablation}` 隔离，避免实验互相覆盖。业务指标和建议顺序见
+[`GRPO_ABLATION_GUIDE.md`](GRPO_ABLATION_GUIDE.md)。
 
 启动前可只检查配置而不申请 GPU：
 `python scripts/validate_rl_variant.py dapo`。
-```
 
 算法选择:
 | 算法 | 优化粒度 | 特点 | 状态 |
@@ -381,6 +401,7 @@ NGRPO_PATCHED_VERL=1 RL_VARIANT=ngrpo bash scripts/run_npc_training.sh
 | GRPO | sample-level | 对照基线；组内均值/标准差归一化 | 已配置 |
 | DAPO | token-level | veRL DAPO RewardManager、Clip-Higher、Dynamic Sampling 配置、Overlong shaping | 已配置；需锁定 veRL 版本验证 filter_groups |
 | NGRPO | sample-level | 自定义 veRL advantage estimator，std floor=0.05 | 需 `NGRPO_PATCHED_VERL=1` |
+| Anchor-GRPO | sample-level | zero-std 组统计时加入虚拟 1.0 锚点；只能制造梯度，不能排序真实轨迹 | 需 patch，实验性 |
 | GSPO (研究候选) | sequence-level | 需要序列级ratio/clip源码接入与对照实验 | 未实现 |
 
 
@@ -582,7 +603,8 @@ redis-cli ping  # 应返回 PONG
 | GRPO | DeepSeekMath (Shao et al., 2024) | RL训练的策略优化算法（默认） |
 | GSPO | Qwen Team, 2025 ([arXiv:2507.18071](https://arxiv.org/abs/2507.18071)) | 备选算法，序列级优化更适配多轮tool-use |
 | DAPO | ByteDance Seed & Tsinghua (Yu et al., 2025) ([arXiv:2503.14476](https://arxiv.org/abs/2503.14476)) | 入口配置 DAPO RewardManager、Clip-Higher、Dynamic Sampling 与 Overlong shaping；`use_dynamic_bsz`仅是吞吐优化。真实 `filter_groups` 行为需在锁定的 veRL commit 上做最小 batch 验证 |
-| NGRPO | 项目自定义对照变体 | Normalized-GRPO + std floor，避免 NPC 近确定性 group 放大梯度；通过 `rl/verl_patches/ngrpo_core_algos.py` 注册 |
+| NGRPO | 项目历史对照变体 | Normalized-GRPO + std floor，避免 NPC 近确定性 group 放大梯度，但不能修复严格 zero-std；通过 `rl/verl_patches/ngrpo_core_algos.py` 注册 |
+| Anchor-GRPO | AiCamp 文章机制的独立对照 | zero-std 时加入虚拟 1.0 计算统计量，不把虚拟样本加入 loss；不能替代数据难度与奖励修复 |
 | Self-Instruct | Wang et al., 2023 | NPC种子自动扩充 |
 | Persona Hub | Ge et al., 2025 | 多样性角色生成方法论 |
 | ReAct | Yao et al., 2022 | Agent推理+行动的交替模式 |
